@@ -39,3 +39,13 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# MCP config (contains auth tokens)
+.mcp.json
+
+# Playwright MCP artifacts
+.playwright-mcp/
+
+# Scripts with hardcoded secrets
+scripts/execute-batches.py
+scripts/leads-inserts.json
