@@ -1714,15 +1714,20 @@ function registerTaskTools(server: McpServer): void {
       if (todoistToken) {
         try {
           const todoistRes = await fetch(
-            `https://api.todoist.com/rest/v2/tasks?filter=today|overdue`,
+            "https://api.todoist.com/rest/v2/tasks",
             { headers: { Authorization: `Bearer ${todoistToken}` } }
           );
           if (todoistRes.ok) {
-            const tasks = (await todoistRes.json()) as Array<{
+            const allTasks = (await todoistRes.json()) as Array<{
               content: string;
               due: { date: string } | null;
               priority: number;
             }>;
+            const todayStr = new Date().toISOString().slice(0, 10);
+            const tasks = allTasks.filter((t) => {
+              if (!t.due) return false;
+              return t.due.date <= todayStr; // today or overdue
+            });
             if (tasks.length === 0) {
               brief.push(`  No tasks due today.`);
             } else {
@@ -1998,12 +2003,14 @@ function registerDashboardTools(server: McpServer): void {
         if (todoistToken) {
           try {
             const res = await fetch(
-              `https://api.todoist.com/rest/v2/tasks?filter=today|overdue`,
+              "https://api.todoist.com/rest/v2/tasks",
               { headers: { Authorization: `Bearer ${todoistToken}` } }
             );
             if (res.ok) {
-              const tasks = (await res.json()) as Array<{ content: string }>;
-              summary.push(`Tasks: ${tasks.length} due today/overdue`);
+              const allTasks = (await res.json()) as Array<{ content: string; due: { date: string } | null }>;
+              const todayStr = new Date().toISOString().slice(0, 10);
+              const dueTasks = allTasks.filter((t) => t.due && t.due.date <= todayStr);
+              summary.push(`Tasks: ${dueTasks.length} due today/overdue (${allTasks.length} total)`);
             } else {
               summary.push(`Tasks: Todoist API error (${res.status})`);
             }
