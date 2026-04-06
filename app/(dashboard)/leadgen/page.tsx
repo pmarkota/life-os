@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Radar,
@@ -226,17 +226,113 @@ export default function LeadGenPage() {
   const [skipWebCheck, setSkipWebCheck] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
-  // Search state
+  // Job state (Inngest-backed)
+  const [jobId, setJobId] = useState<string | null>(null);
   const [searching, setSearching] = useState(false);
   const [searchProgress, setSearchProgress] = useState("");
+  const [jobProgress, setJobProgress] = useState<{
+    searched: number;
+    checked: number;
+    qualifying: number;
+    skipped: number;
+    target: number;
+  } | null>(null);
   const [rawResults, setRawResults] = useState<SearchResult[]>([]);
-  const abortRef = useRef(false);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Review state
   const [results, setResults] = useState<SearchResult[]>([]);
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
   const [regeneratingIdx, setRegeneratingIdx] = useState<number | null>(null);
+
+  // ─── Resume active job on page load ──────────
+  useEffect(() => {
+    async function checkActiveJob() {
+      try {
+        const res = await fetch("/api/leadgen/jobs");
+        if (!res.ok) return;
+        const jobs = await res.json();
+        const active = jobs.find(
+          (j: { status: string }) =>
+            j.status === "pending" || j.status === "searching" || j.status === "processing",
+        );
+        if (active) {
+          setJobId(active.id);
+          setPhase("search");
+          setSearching(true);
+          setJobProgress(active.progress);
+          setSearchProgress(
+            `Resuming job... ${active.progress.qualifying}/${active.progress.target} qualifying leads`,
+          );
+          startPolling(active.id);
+        }
+      } catch {
+        // no active jobs
+      }
+    }
+    checkActiveJob();
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ─── Polling logic ───────────────────────────
+  const startPolling = useCallback((id: string) => {
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/leadgen/jobs/${id}`);
+        if (!res.ok) return;
+        const job = await res.json();
+
+        setJobProgress(job.progress);
+        setSearchProgress(
+          job.status === "searching"
+            ? `Searching Google Maps... Found ${job.progress.searched} businesses`
+            : `Processing leads: ${job.progress.qualifying}/${job.progress.target} qualifying (${job.progress.checked} checked, ${job.progress.skipped} skipped)`,
+        );
+
+        // Show live results as they come in
+        if (job.results && job.results.length > 0) {
+          setRawResults(job.results);
+        }
+
+        if (job.status === "completed") {
+          if (pollRef.current) clearInterval(pollRef.current);
+          setSearching(false);
+          setResults(job.results ?? []);
+          setPhase("review");
+          const qualifying = (job.results ?? []).filter(
+            (r: SearchResult) => !r.removed,
+          ).length;
+          toast.success(`Found ${qualifying} leads ready for review`);
+        } else if (job.status === "failed") {
+          if (pollRef.current) clearInterval(pollRef.current);
+          setSearching(false);
+          toast.error(job.error ?? "Job failed");
+          if (job.results && job.results.length > 0) {
+            setResults(job.results);
+            setPhase("review");
+          } else {
+            setPhase("configure");
+          }
+        } else if (job.status === "cancelled") {
+          if (pollRef.current) clearInterval(pollRef.current);
+          setSearching(false);
+          if (job.results && job.results.length > 0) {
+            setResults(job.results);
+            setPhase("review");
+          } else {
+            setPhase("configure");
+          }
+        }
+      } catch {
+        // poll failed, keep trying
+      }
+    }, 3000);
+  }, []);
 
   // ─── Config handlers ─────────────────────────────
   const addCity = useCallback(() => {
@@ -261,7 +357,7 @@ export default function LeadGenPage() {
 
   const totalLeads = cities.reduce((sum, c) => sum + c.count, 0);
 
-  // ─── Search handler ──────────────────────────────
+  // ─── Search handler (creates Inngest background job) ──
   const startSearch = useCallback(async () => {
     if (!selectedMarket || !selectedNiche || cities.length === 0) {
       toast.error("Please select market, niche, and add at least one city");
@@ -270,13 +366,12 @@ export default function LeadGenPage() {
 
     setPhase("search");
     setSearching(true);
-    setSearchProgress("Searching Google Maps...");
+    setSearchProgress("Starting lead generation job...");
     setRawResults([]);
-    abortRef.current = false;
+    setJobProgress(null);
 
     try {
-      // Step 1: Search Google Maps
-      const searchRes = await fetch("/api/leadgen/search", {
+      const res = await fetch("/api/leadgen/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -289,177 +384,47 @@ export default function LeadGenPage() {
           })),
           min_rating: minRating,
           min_reviews: minReviews,
+          skip_web_check: skipWebCheck,
         }),
       });
 
-      if (!searchRes.ok) {
-        const err = await searchRes.json();
-        throw new Error(err.error || "Search failed");
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Failed to start job");
       }
 
-      const searchData = await searchRes.json();
-      const rawPlaces = searchData.results as Array<{
-        business_name: string;
-        location: string;
-        phone: string | null;
-        website_url: string | null;
-        rating: number | null;
-        reviews: number | null;
-        snippet: string | null;
-      }>;
-
-      if (rawPlaces.length === 0) {
-        toast.error("No results found. Try different search criteria.");
-        setSearching(false);
-        setPhase("configure");
-        return;
-      }
-
-      const requestedCount = searchData.requested_count ?? totalLeads;
-
-      setSearchProgress(
-        `Found ${rawPlaces.length} businesses. Checking websites & generating messages...`,
-      );
-
-      // Step 2: Process each result — stop once we have enough qualifying leads
-      const processed: SearchResult[] = [];
-      let qualifyingCount = 0;
-
-      for (let i = 0; i < rawPlaces.length; i++) {
-        if (abortRef.current) break;
-        // Stop when we have enough qualifying (non-GOOD) leads
-        if (qualifyingCount >= requestedCount) break;
-
-        const place = rawPlaces[i];
-        setSearchProgress(
-          `Checking ${i + 1}/${rawPlaces.length} (${qualifyingCount}/${requestedCount} qualifying): ${place.business_name}...`,
-        );
-
-        let webData = {
-          web_status: "NO_WEB",
-          quality_score: 10,
-          page_speed: null as number | null,
-          email: null as string | null,
-          instagram: null as string | null,
-          facebook: null as string | null,
-          has_ssl: false,
-          is_mobile_responsive: false,
-          tech_stack: null as string | null,
-        };
-
-        // Check website if URL exists and not skipped
-        if (place.website_url && !skipWebCheck) {
-          try {
-            const webRes = await fetch("/api/leadgen/check-website", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ url: place.website_url, market: selectedMarket }),
-            });
-            if (webRes.ok) {
-              webData = await webRes.json();
-            }
-          } catch {
-            // Continue without web data
-          }
-        }
-
-        // Skip GOOD websites
-        if (webData.web_status === "GOOD" && !skipWebCheck) {
-          const skipped: SearchResult = {
-            ...place,
-            email: webData.email,
-            instagram: webData.instagram,
-            facebook: webData.facebook,
-            web_status: "GOOD",
-            quality_score: webData.quality_score,
-            page_speed: webData.page_speed,
-            has_ssl: webData.has_ssl,
-            is_mobile_responsive: webData.is_mobile_responsive,
-            tech_stack: webData.tech_stack,
-            channel: "email",
-            message: "",
-            market: selectedMarket,
-            niche: selectedNiche,
-            owner_name: null,
-            selected: false,
-            removed: true,
-          };
-          processed.push(skipped);
-          setRawResults([...processed]);
-          continue;
-        }
-
-        // Determine channel
-        const channel = determineChannel(
-          selectedMarket,
-          webData.email ?? place.phone ? "email" : null,
-          place.phone,
-          webData.instagram,
-        );
-
-        // Generate message
-        let message = "";
-        try {
-          const msgRes = await fetch("/api/leadgen/generate-message", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              business_name: place.business_name,
-              city: place.location,
-              niche: selectedNiche,
-              rating: place.rating,
-              reviews: place.reviews,
-              web_status: webData.web_status,
-              snippet: place.snippet,
-              channel,
-              market: selectedMarket,
-            }),
-          });
-          if (msgRes.ok) {
-            const msgData = await msgRes.json();
-            message = msgData.message;
-          }
-        } catch {
-          // Use empty message, user can regenerate
-        }
-
-        const result: SearchResult = {
-          ...place,
-          email: webData.email,
-          instagram: webData.instagram,
-          facebook: webData.facebook,
-          web_status: webData.web_status,
-          quality_score: webData.quality_score,
-          page_speed: webData.page_speed,
-          has_ssl: webData.has_ssl,
-          is_mobile_responsive: webData.is_mobile_responsive,
-          tech_stack: webData.tech_stack,
-          channel,
-          message,
-          market: selectedMarket,
-          niche: selectedNiche,
-          owner_name: null,
-          selected: true,
-          removed: false,
-        };
-
-        processed.push(result);
-        qualifyingCount++;
-        setRawResults([...processed]);
-      }
-
-      setResults(processed);
-      setSearching(false);
-      setPhase("review");
-      toast.success(`Found ${processed.filter((r) => !r.removed).length} leads ready for review`);
+      const { job_id } = await res.json();
+      setJobId(job_id);
+      setSearchProgress("Job queued. Searching Google Maps...");
+      startPolling(job_id);
     } catch (error) {
       toast.error(
-        error instanceof Error ? error.message : "Search failed",
+        error instanceof Error ? error.message : "Failed to start job",
       );
       setSearching(false);
       setPhase("configure");
     }
-  }, [selectedMarket, selectedNiche, cities, minRating, minReviews, skipWebCheck]);
+  }, [selectedMarket, selectedNiche, cities, minRating, minReviews, skipWebCheck, startPolling]);
+
+  // ─── Cancel job ──────────────────────────────────
+  const cancelJob = useCallback(async () => {
+    if (!jobId) return;
+    if (pollRef.current) clearInterval(pollRef.current);
+    try {
+      await fetch(`/api/leadgen/jobs/${jobId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "cancelled" }),
+      });
+    } catch { /* best effort */ }
+    setSearching(false);
+    if (rawResults.length > 0) {
+      setResults(rawResults);
+      setPhase("review");
+    } else {
+      setPhase("configure");
+    }
+  }, [jobId, rawResults]);
 
   // ─── Review handlers ─────────────────────────────
   const toggleSelect = useCallback((idx: number) => {
@@ -902,21 +867,33 @@ export default function LeadGenPage() {
                   </div>
                 )}
 
+                {/* Progress details */}
+                {jobProgress && (
+                  <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4 text-center">
+                    {[
+                      { label: "Searched", value: jobProgress.searched, color: "#A1A1AA" },
+                      { label: "Checked", value: jobProgress.checked, color: "#0EA5E9" },
+                      { label: "Qualifying", value: `${jobProgress.qualifying}/${jobProgress.target}`, color: "#22C55E" },
+                      { label: "Skipped", value: jobProgress.skipped, color: "#71717A" },
+                    ].map((s) => (
+                      <div key={s.label}>
+                        <p className="text-lg font-bold" style={{ color: s.color }}>{s.value}</p>
+                        <p className="text-[10px] text-[#71717A]">{s.label}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <p className="mt-3 text-xs text-[#52525B] text-center">
+                  You can leave this page and come back — the job runs in the background.
+                </p>
+
                 <Button
-                  onClick={() => {
-                    abortRef.current = true;
-                    setSearching(false);
-                    if (rawResults.length > 0) {
-                      setResults(rawResults);
-                      setPhase("review");
-                    } else {
-                      setPhase("configure");
-                    }
-                  }}
+                  onClick={cancelJob}
                   variant="outline"
                   className="mt-4 w-full border-[#27272A] text-[#A1A1AA]"
                 >
-                  Cancel
+                  Cancel Job
                 </Button>
               </CardContent>
             </Card>
@@ -1244,21 +1221,3 @@ function CopyBtn({ text }: { text: string }) {
   );
 }
 
-// ─── Channel determination (client-side) ─────────
-function determineChannel(
-  market: string,
-  email: string | null,
-  phone: string | null,
-  instagram: string | null,
-): string {
-  if (market === "hr") {
-    if (email) return "email";
-    if (phone) return "whatsapp";
-    if (instagram) return "instagram_dm";
-    return "whatsapp";
-  }
-  if (email) return "email";
-  if (instagram) return "instagram_dm";
-  if (phone) return "telefon";
-  return "email";
-}

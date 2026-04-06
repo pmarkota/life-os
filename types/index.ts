@@ -297,6 +297,30 @@ export interface LeadgenResult {
   selected: boolean;
 }
 
+// --- Leadgen Jobs (Inngest) ---
+export type LeadgenJobStatus = "pending" | "searching" | "processing" | "completed" | "failed" | "cancelled";
+
+export interface LeadgenJobProgress {
+  searched: number;
+  checked: number;
+  qualifying: number;
+  skipped: number;
+  target: number;
+}
+
+export interface LeadgenJob {
+  id: string;
+  user_id: string;
+  status: LeadgenJobStatus;
+  config: Record<string, unknown>;
+  progress: LeadgenJobProgress;
+  results: LeadgenResult[];
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+}
+
 // --- Dashboard ---
 export interface KPICard {
   label: string;
