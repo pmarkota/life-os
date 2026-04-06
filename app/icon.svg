@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0C0C0E"/>
+      <stop offset="100%" stop-color="#111114"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38BDF8"/>
+      <stop offset="50%" stop-color="#0EA5E9"/>
+      <stop offset="100%" stop-color="#0284C7"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="12" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="softglow">
+      <feGaussianBlur stdDeviation="28" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <clipPath id="roundclip">
+      <rect width="512" height="512" rx="108"/>
+    </clipPath>
+  </defs>
+
+  <!-- Background -->
+  <rect width="512" height="512" rx="108" fill="url(#bg)"/>
+
+  <!-- Ambient glow behind the icon -->
+  <circle cx="256" cy="256" r="160" fill="#0EA5E9" opacity="0.06" filter="url(#softglow)"/>
+
+  <!-- Outer border -->
+  <rect x="4" y="4" width="504" height="504" rx="106" fill="none" stroke="#1E1E22" stroke-width="3"/>
+
+  <!-- Inner hexagonal grid pattern (subtle) -->
+  <g clip-path="url(#roundclip)" opacity="0.035" stroke="#0EA5E9" stroke-width="1" fill="none">
+    <line x1="0" y1="128" x2="512" y2="128"/>
+    <line x1="0" y1="256" x2="512" y2="256"/>
+    <line x1="0" y1="384" x2="512" y2="384"/>
+    <line x1="128" y1="0" x2="128" y2="512"/>
+    <line x1="256" y1="0" x2="256" y2="512"/>
+    <line x1="384" y1="0" x2="384" y2="512"/>
+  </g>
+
+  <!-- "P" letterform — bold, geometric, with a notch that makes it look like a circuit/command symbol -->
+  <g filter="url(#glow)">
+    <!-- Vertical stem -->
+    <rect x="148" y="120" width="52" height="272" rx="8" fill="url(#accent)"/>
+    <!-- Top horizontal -->
+    <rect x="148" y="120" width="180" height="52" rx="8" fill="url(#accent)"/>
+    <!-- Right vertical of the bowl -->
+    <rect x="276" y="120" width="52" height="152" rx="8" fill="url(#accent)"/>
+    <!-- Bottom horizontal of the bowl -->
+    <rect x="148" y="220" width="180" height="52" rx="8" fill="url(#accent)"/>
+  </g>
+
+  <!-- Cursor blink element — small square, bottom right -->
+  <rect x="340" y="348" width="32" height="44" rx="4" fill="#0EA5E9" opacity="0.9">
+    <animate attributeName="opacity" values="0.9;0.2;0.9" dur="1.4s" repeatCount="indefinite"/>
+  </rect>
+
+  <!-- Dot accent — top right corner -->
+  <circle cx="396" cy="140" r="14" fill="#0EA5E9" opacity="0.5"/>
+  <circle cx="396" cy="140" r="6" fill="#38BDF8"/>
+</svg>

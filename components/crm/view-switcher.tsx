@@ -1,11 +1,11 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { LayoutGrid, Table2, AlertTriangle, Trophy } from "lucide-react";
+import { LayoutGrid, Table2, AlertTriangle, Trophy, Target } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 // ─── Types ──────────────────────────────────────────
-export type CrmView = "board" | "table" | "needs-action" | "won";
+export type CrmView = "board" | "table" | "needs-action" | "won" | "scored";
 
 interface ViewSwitcherProps {
   currentView: CrmView;
@@ -19,6 +19,7 @@ const VIEWS: { id: CrmView; label: string; icon: typeof LayoutGrid }[] = [
   { id: "table", label: "Table", icon: Table2 },
   { id: "needs-action", label: "Needs Action", icon: AlertTriangle },
   { id: "won", label: "Won", icon: Trophy },
+  { id: "scored", label: "Scored", icon: Target },
 ];
 
 export function ViewSwitcher({

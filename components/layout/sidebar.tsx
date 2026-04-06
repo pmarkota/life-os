@@ -7,6 +7,8 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   LayoutDashboard,
   Users,
+  Zap,
+  Radar,
   DollarSign,
   Dumbbell,
   GraduationCap,
@@ -34,6 +36,8 @@ interface NavItem {
 const navItems: NavItem[] = [
   { label: "Command Center", href: "/", icon: LayoutDashboard },
   { label: "Outreach CRM", href: "/crm", icon: Users },
+  { label: "Outreach Agent", href: "/outreach", icon: Zap },
+  { label: "Lead Generator", href: "/leadgen", icon: Radar },
   { label: "Finance", href: "/finance", icon: DollarSign },
   { label: "Fitness", href: "/fitness", icon: Dumbbell },
   { label: "University", href: "/university", icon: GraduationCap },

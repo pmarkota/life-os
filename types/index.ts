@@ -34,7 +34,7 @@ export type LeadChannel =
   | "whatsapp"
   | "osobno";
 
-export type LeadMarket = "hr" | "dach" | "us";
+export type LeadMarket = "hr" | "dach" | "us" | "uk";
 
 export type SubscriptionTier = "basic_79" | "standard_99" | "custom";
 
@@ -61,6 +61,10 @@ export interface Lead {
   first_message: string | null;
   first_contact: string | null;
   page_speed: number | null;
+  lead_score: number | null;
+  follow_up_count: number;
+  max_follow_ups: number;
+  last_enriched_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -186,6 +190,111 @@ export interface Deadline {
   completed: boolean;
   priority: Priority;
   notes: string | null;
+}
+
+// --- Outreach Queue (Feature 1) ---
+export type OutreachPriority = "hot" | "follow_up" | "nurture" | "first_contact";
+export type OutreachQueueStatus = "pending" | "approved" | "sent" | "skipped";
+
+export interface OutreachQueueItem {
+  id: string;
+  user_id: string;
+  lead_id: string;
+  channel: string;
+  message: string;
+  priority: OutreachPriority;
+  scheduled_for: string;
+  status: OutreachQueueStatus;
+  generated_at: string;
+  sent_at: string | null;
+  notes: string | null;
+  // Joined lead data
+  lead?: Lead;
+}
+
+// --- Lead Enrichment (Feature 2) ---
+export interface LeadEnrichment {
+  id: string;
+  lead_id: string;
+  page_speed_mobile: number | null;
+  page_speed_desktop: number | null;
+  has_ssl: boolean | null;
+  is_mobile_responsive: boolean | null;
+  tech_stack: string | null;
+  google_rating: number | null;
+  google_reviews_count: number | null;
+  instagram_followers: number | null;
+  website_last_modified: string | null;
+  enrichment_summary: string | null;
+  enriched_at: string;
+  raw_data: Record<string, unknown> | null;
+}
+
+// --- Conversation Tracker (Feature 3) ---
+export type ConversationChannel = "whatsapp" | "email" | "instagram_dm" | "telefon" | "linkedin" | "osobno";
+export type ConversationDirection = "outbound" | "inbound";
+export type ConversationSentiment = "positive" | "neutral" | "negative" | "no_response";
+
+export interface ConversationEntry {
+  id: string;
+  user_id: string;
+  lead_id: string;
+  type: OutreachType;
+  content: string | null;
+  sent_at: string;
+  response_received: boolean;
+  response_at: string | null;
+  channel: ConversationChannel | null;
+  direction: ConversationDirection;
+  subject: string | null;
+  sentiment: ConversationSentiment | null;
+  follow_up_number: number | null;
+}
+
+// --- Lead Scores (Feature 4) ---
+export type ScoreRecommendation = "pursue" | "nurture" | "drop" | "close_now";
+
+export interface LeadScore {
+  id: string;
+  lead_id: string;
+  total_score: number;
+  engagement_score: number;
+  business_score: number;
+  timing_score: number;
+  negative_score: number;
+  recommendation: ScoreRecommendation | null;
+  recommendation_reason: string | null;
+  similar_won_leads: Array<{ id: string; business_name: string; niche: string }> | null;
+  scored_at: string;
+}
+
+// --- Lead Generator (Feature 5) ---
+export type LeadgenMarket = "hr" | "dach" | "us" | "uk";
+export type WebStatus = "NO_WEB" | "BAD_WEB" | "MEDIOCRE" | "GOOD";
+
+export interface LeadgenResult {
+  business_name: string;
+  location: string;
+  phone: string | null;
+  website_url: string | null;
+  email: string | null;
+  instagram: string | null;
+  facebook: string | null;
+  rating: number | null;
+  reviews: number | null;
+  snippet: string | null;
+  web_status: WebStatus;
+  quality_score: number;
+  page_speed: number | null;
+  has_ssl: boolean | null;
+  is_mobile_responsive: boolean | null;
+  tech_stack: string | null;
+  channel: string;
+  message: string;
+  market: LeadgenMarket;
+  niche: string;
+  owner_name: string | null;
+  selected: boolean;
 }
 
 // --- Dashboard ---

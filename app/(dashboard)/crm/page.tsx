@@ -11,6 +11,7 @@ import {
   ArrowRight,
   RefreshCw,
   X,
+  Zap,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -23,6 +24,8 @@ import { TableView } from "@/components/crm/table-view";
 import { ViewSwitcher, type CrmView } from "@/components/crm/view-switcher";
 import { LeadDetailModal } from "@/components/crm/lead-detail-modal";
 import { AddLeadModal } from "@/components/crm/add-lead-modal";
+import { BulkEnrichModal } from "@/components/crm/bulk-enrich-modal";
+import { ScoredView } from "@/components/crm/scored-view";
 import type { Lead, LeadStatus, LeadNiche, LeadChannel, LeadMarket } from "@/types";
 
 // ─── Status config (updated statuses) ───────────────
@@ -87,12 +90,13 @@ const CHANNEL_LABELS: Record<LeadChannel, string> = {
 };
 
 // ─── Market options ────────────────────────────────
-const MARKET_OPTIONS: LeadMarket[] = ["hr", "dach", "us"];
+const MARKET_OPTIONS: LeadMarket[] = ["hr", "dach", "us", "uk"];
 
 const MARKET_LABELS: Record<LeadMarket, string> = {
   hr: "HR",
   dach: "DACH",
   us: "US",
+  uk: "UK",
 };
 
 // ─── Status options for filter ─────────────────────
@@ -135,6 +139,7 @@ export default function CrmPage() {
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
+  const [bulkEnrichOpen, setBulkEnrichOpen] = useState(false);
 
   // ── Fetch leads ──────────────────────────────────
   const fetchLeads = useCallback(async () => {
@@ -271,8 +276,9 @@ export default function CrmPage() {
       table: clientFilteredLeads.length,
       "needs-action": filteredLeads.needsAction.length,
       won: filteredLeads.won.length,
+      scored: clientFilteredLeads.filter((l) => l.lead_score !== null && l.lead_score > 0).length,
     }),
-    [clientFilteredLeads.length, filteredLeads],
+    [clientFilteredLeads, filteredLeads],
   );
 
   // ── Leads to display in current view ─────────────
@@ -427,10 +433,20 @@ export default function CrmPage() {
             Manage your Elevera Studio lead pipeline
           </p>
         </div>
-        <Button onClick={() => setAddOpen(true)} className="gap-2 shrink-0">
-          <Plus className="h-4 w-4" />
-          Add Lead
-        </Button>
+        <div className="flex items-center gap-2 shrink-0">
+          <Button
+            variant="outline"
+            onClick={() => setBulkEnrichOpen(true)}
+            className="gap-2"
+          >
+            <Zap className="h-4 w-4" />
+            Bulk Enrich
+          </Button>
+          <Button onClick={() => setAddOpen(true)} className="gap-2">
+            <Plus className="h-4 w-4" />
+            Add Lead
+          </Button>
+        </div>
       </motion.div>
 
       {/* ── Stats Bar ───────────────────────────────── */}
@@ -737,6 +753,11 @@ export default function CrmPage() {
             onLeadMove={handleLeadMove}
             onLeadClick={handleLeadClick}
           />
+        ) : currentView === "scored" ? (
+          <ScoredView
+            leads={clientFilteredLeads}
+            onSelectLead={handleLeadClick}
+          />
         ) : (
           <TableView
             leads={viewLeads}
@@ -760,6 +781,14 @@ export default function CrmPage() {
         open={addOpen}
         onOpenChange={setAddOpen}
         onLeadCreated={handleLeadCreated}
+      />
+
+      <BulkEnrichModal
+        open={bulkEnrichOpen}
+        onOpenChange={setBulkEnrichOpen}
+        onComplete={() => {
+          fetchLeads();
+        }}
       />
     </div>
   );

@@ -30,6 +30,9 @@ import {
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { DatePicker } from "@/components/ui/date-picker";
+import { LeadEnrichmentPanel } from "@/components/crm/lead-enrichment";
+import { ConversationThread as ConversationThreadPanel } from "@/components/crm/conversation-thread";
+import { LeadScoreDisplay as LeadScorePanel } from "@/components/crm/lead-score-display";
 import type {
   Lead,
   LeadStatus,
@@ -887,7 +890,7 @@ function LeadDetailModalBody({
   onLeadUpdate,
   onLeadDelete,
 }: LeadDetailModalBodyProps) {
-  const [activeTab, setActiveTab] = useState<"details" | "outreach">("details");
+  const [activeTab, setActiveTab] = useState<"details" | "outreach" | "enrichment" | "score">("details");
   const [savingField, setSavingField] = useState<SavingField>(null);
   const [deleting, setDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -1077,19 +1080,27 @@ function LeadDetailModalBody({
 
         {/* ---- Tabs ---- */}
         <div className="flex gap-1 mt-4">
-          {(["details", "outreach"] as const).map((tab) => (
-            <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
-              className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors duration-150 ${
-                activeTab === tab
-                  ? "bg-[#27272A] text-[#FAFAFA]"
-                  : "text-[#71717A] hover:text-[#A1A1AA] hover:bg-[#1E1E22]"
-              }`}
-            >
-              {tab === "outreach" ? "Outreach Log" : "Details"}
-            </button>
-          ))}
+          {(["details", "outreach", "enrichment", "score"] as const).map((tab) => {
+            const labels: Record<string, string> = {
+              details: "Details",
+              outreach: "Conversations",
+              enrichment: "Intelligence",
+              score: "Lead Score",
+            };
+            return (
+              <button
+                key={tab}
+                onClick={() => setActiveTab(tab)}
+                className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors duration-150 ${
+                  activeTab === tab
+                    ? "bg-[#27272A] text-[#FAFAFA]"
+                    : "text-[#71717A] hover:text-[#A1A1AA] hover:bg-[#1E1E22]"
+                }`}
+              >
+                {labels[tab]}
+              </button>
+            );
+          })}
         </div>
       </div>
 
@@ -1110,15 +1121,40 @@ function LeadDetailModalBody({
           )}
 
           {activeTab === "outreach" && (
-            <OutreachTab
-              entries={outreachEntries}
-              loading={loadingOutreach}
-              newType={newOutreachType}
-              newContent={newOutreachContent}
-              submitting={submittingOutreach}
-              onTypeChange={setNewOutreachType}
-              onContentChange={setNewOutreachContent}
-              onSubmit={submitOutreach}
+            <ConversationThreadPanel
+              leadId={lead.id}
+              onConversationUpdate={() => {
+                // Refresh lead data after conversation log
+                fetch(`/api/leads/${lead.id}`)
+                  .then((res) => res.json())
+                  .then((updated) => onLeadUpdate(updated as Lead))
+                  .catch(() => {});
+              }}
+            />
+          )}
+
+          {activeTab === "enrichment" && (
+            <LeadEnrichmentPanel
+              leadId={lead.id}
+              lead={lead}
+              onEnrichmentComplete={() => {
+                fetch(`/api/leads/${lead.id}`)
+                  .then((res) => res.json())
+                  .then((updated) => onLeadUpdate(updated as Lead))
+                  .catch(() => {});
+              }}
+            />
+          )}
+
+          {activeTab === "score" && (
+            <LeadScorePanel
+              leadId={lead.id}
+              onScoreUpdate={() => {
+                fetch(`/api/leads/${lead.id}`)
+                  .then((res) => res.json())
+                  .then((updated) => onLeadUpdate(updated as Lead))
+                  .catch(() => {});
+              }}
             />
           )}
         </div>

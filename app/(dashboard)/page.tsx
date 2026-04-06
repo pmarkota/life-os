@@ -456,6 +456,12 @@ export default function CommandCenter() {
     return bOverdue - aOverdue;
   });
 
+  // Top leads by score
+  const topLeads = data.leads
+    .filter((l) => l.lead_score !== null && l.lead_score > 0 && !["won", "lost"].includes(l.status))
+    .sort((a, b) => (b.lead_score ?? 0) - (a.lead_score ?? 0))
+    .slice(0, 5);
+
   // Upcoming deadlines: due within 7 days
   const upcomingDeadlines = data.deadlines
     .filter((d) => {
@@ -1050,6 +1056,53 @@ export default function CommandCenter() {
         </motion.div>
       </div>
 
+      {/* Top Leads by Score */}
+      {topLeads.length > 0 && (
+        <motion.div variants={itemVariants}>
+          <Card className="hover:border-[#3F3F46] transition-colors">
+            <CardContent className="p-5">
+              <h3 className="text-sm font-semibold text-[#A1A1AA] mb-3">
+                Top Leads
+              </h3>
+              <div className="space-y-2">
+                {topLeads.map((lead) => (
+                  <div
+                    key={lead.id}
+                    onClick={() => (window.location.href = "/crm")}
+                    className="flex items-center justify-between rounded-lg border border-[#27272A] bg-[#09090B] px-3 py-2 cursor-pointer hover:border-[#3F3F46] transition-colors"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <span
+                        className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-bold tabular-nums ${
+                          (lead.lead_score ?? 0) >= 70
+                            ? "bg-[#22C55E]/15 text-[#22C55E]"
+                            : (lead.lead_score ?? 0) >= 50
+                              ? "bg-[#0EA5E9]/15 text-[#0EA5E9]"
+                              : "bg-[#F59E0B]/15 text-[#F59E0B]"
+                        }`}
+                      >
+                        {lead.lead_score}
+                      </span>
+                      <span className="text-sm text-[#FAFAFA] truncate">
+                        {lead.business_name}
+                      </span>
+                      {lead.location && (
+                        <span className="text-xs text-[#71717A] hidden sm:inline">
+                          {lead.location}
+                        </span>
+                      )}
+                    </div>
+                    <span className="text-xs text-[#71717A] shrink-0">
+                      {lead.status}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        </motion.div>
+      )}
+
       {/* Quick Actions */}
       <motion.div variants={itemVariants}>
         <Card className="hover:border-[#3F3F46] transition-colors">
@@ -1085,13 +1138,22 @@ export default function CommandCenter() {
                 Log Expense
               </Button>
               <Button
+                variant="secondary"
+                size="sm"
+                className="gap-2"
+                onClick={() => (window.location.href = "/outreach")}
+              >
+                <Activity className="h-3.5 w-3.5" />
+                Outreach Queue
+              </Button>
+              <Button
                 variant="outline"
                 size="sm"
                 className="gap-2"
-                onClick={() => (window.location.href = "/crm")}
+                onClick={() => (window.location.href = "/leadgen")}
               >
-                <Activity className="h-3.5 w-3.5" />
-                View Pipeline
+                <Target className="h-3.5 w-3.5" />
+                Find Leads
               </Button>
             </div>
           </CardContent>

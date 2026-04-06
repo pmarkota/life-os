@@ -77,10 +77,28 @@ export function LeadCard({ lead, isDragging = false, onClick }: LeadCardProps) {
         isDragging && "shadow-[0_12px_40px_rgba(0,0,0,0.45)] border-[#3F3F46]",
       )}
     >
-      {/* Business name */}
-      <p className="text-sm font-semibold text-[#FAFAFA] truncate leading-tight">
-        {lead.business_name}
-      </p>
+      {/* Business name + score badge */}
+      <div className="flex items-center justify-between gap-1">
+        <p className="text-sm font-semibold text-[#FAFAFA] truncate leading-tight">
+          {lead.business_name}
+        </p>
+        {lead.lead_score !== null && lead.lead_score > 0 && (
+          <span
+            className={cn(
+              "shrink-0 rounded-full px-1.5 py-0 text-[10px] font-bold tabular-nums",
+              lead.lead_score >= 70
+                ? "bg-[#22C55E]/15 text-[#22C55E]"
+                : lead.lead_score >= 50
+                  ? "bg-[#0EA5E9]/15 text-[#0EA5E9]"
+                  : lead.lead_score >= 30
+                    ? "bg-[#F59E0B]/15 text-[#F59E0B]"
+                    : "bg-[#EF4444]/15 text-[#EF4444]",
+            )}
+          >
+            {lead.lead_score}
+          </span>
+        )}
+      </div>
 
       {/* Location row */}
       {lead.location && (
@@ -106,14 +124,31 @@ export function LeadCard({ lead, isDragging = false, onClick }: LeadCardProps) {
           <span />
         )}
 
-        <span
-          className={cn(
-            "text-[10px] font-medium tabular-nums",
-            contactLabel === "New" ? "text-[#0EA5E9]" : "text-[#A1A1AA]",
+        <div className="flex items-center gap-1.5">
+          {lead.last_enriched_at && (
+            <span
+              className={cn(
+                "h-2 w-2 rounded-full shrink-0",
+                lead.page_speed !== null && lead.page_speed >= 70
+                  ? "bg-[#22C55E]"
+                  : lead.page_speed !== null && lead.page_speed >= 40
+                    ? "bg-[#F59E0B]"
+                    : lead.page_speed !== null
+                      ? "bg-[#EF4444]"
+                      : "bg-[#71717A]",
+              )}
+              title={`Enriched • PageSpeed: ${lead.page_speed ?? "N/A"}`}
+            />
           )}
-        >
-          {contactLabel}
-        </span>
+          <span
+            className={cn(
+              "text-[10px] font-medium tabular-nums",
+              contactLabel === "New" ? "text-[#0EA5E9]" : "text-[#A1A1AA]",
+            )}
+          >
+            {contactLabel}
+          </span>
+        </div>
       </div>
     </motion.div>
   );

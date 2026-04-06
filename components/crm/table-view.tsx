@@ -59,6 +59,7 @@ const MARKET_CONFIG: Record<LeadMarket, { label: string; color: string }> = {
   hr: { label: "HR", color: "#22C55E" },
   dach: { label: "DACH", color: "#0EA5E9" },
   us: { label: "US", color: "#FB923C" },
+  uk: { label: "UK", color: "#8B5CF6" },
 };
 
 // ─── Channel config ─────────────────────────────────

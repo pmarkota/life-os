@@ -1871,6 +1871,31 @@ function registerDashboardTools(server: McpServer): void {
 
         summary.push(`CRM: ${activeLeads.length} active leads, ${needFollowUp.length} follow-up alerts, ${responseRate}% response rate`);
         summary.push(`  Pipeline: ${statusStr}`);
+
+        // Top leads by score
+        const { data: topLeads } = await supabase
+          .from("leads")
+          .select("business_name, lead_score")
+          .not("status", "in", '("won","lost")')
+          .not("lead_score", "is", null)
+          .gt("lead_score", 0)
+          .order("lead_score", { ascending: false })
+          .limit(3);
+
+        if (topLeads && topLeads.length > 0) {
+          summary.push(`  Top leads: ${topLeads.map((l) => `${l.business_name} (${l.lead_score})`).join(", ")}`);
+        }
+
+        // Pending outreach queue
+        const { count: pendingQueue } = await supabase
+          .from("outreach_queue")
+          .select("*", { count: "exact", head: true })
+          .eq("status", "pending")
+          .eq("scheduled_for", todayStr);
+
+        if (pendingQueue && pendingQueue > 0) {
+          summary.push(`  Outreach queue: ${pendingQueue} pending for today`);
+        }
       }
 
       // ─── Finance ───
@@ -2497,6 +2522,1142 @@ function registerClientTools(server: McpServer): void {
 }
 
 // ─────────────────────────────────────────────
+// Outreach Agent Tools (Feature 1)
+// ─────────────────────────────────────────────
+
+const NICHE_PAIN_POINTS: Record<string, { hr: string; en: string }> = {
+  apartmani: {
+    hr: "Svaku rezervaciju plaćate Bookingu proviziju — a mogli biste imati direktne goste",
+    en: "You're paying Booking.com commission on every reservation — you could have direct bookings instead",
+  },
+  frizer: {
+    hr: "Propuštate klijentice koje upravo sad traže salon u {location} na Googleu",
+    en: "You're losing clients searching for a salon in {location} right now",
+  },
+  kozmetika: {
+    hr: "Svaki dan gubite rezervacije jer se klijentice ne mogu online naručiti kod Vas",
+    en: "Every day you're losing bookings because clients can't book online",
+  },
+  dental: {
+    hr: "Propuštate pacijente koji upravo sad traže stomatologa u {location}",
+    en: "You're missing patients searching for a dentist in {location} right now",
+  },
+  restoran: {
+    hr: "Propuštate goste koji traže restoran u {location} na Googleu",
+    en: "You're losing diners searching for a restaurant in {location}",
+  },
+  autoservis: {
+    hr: "Svaki dan Vam prolaze klijenti jer ne mogu vidjeti koje usluge nudite online",
+    en: "Every day customers pass you by because they can't see your services online",
+  },
+  fitness: {
+    hr: "Potencijalni članovi odlaze kod konkurencije jer ne mogu vidjeti Vaše programe online",
+    en: "Potential members go to competitors because they can't find your programs online",
+  },
+  wellness: {
+    hr: "Propuštate klijente koji traže wellness u {location}",
+    en: "You're missing clients searching for wellness in {location}",
+  },
+  fizioterapija: {
+    hr: "Propuštate pacijente koji traže fizioterapeuta u {location}",
+    en: "You're missing patients searching for a physiotherapist in {location}",
+  },
+  pekara: {
+    hr: "Propuštate narudžbe jer ljudi ne mogu vidjeti Vašu ponudu online",
+    en: "You're losing orders because people can't see your offerings online",
+  },
+};
+
+const DEFAULT_PAIN_POINT = {
+  hr: "Svaki dan propuštate klijente koji Vas ne mogu pronaći online",
+  en: "Every day you're losing customers who can't find you online",
+};
+
+function getPainPoint(niche: string | null, location: string | null, lang: "hr" | "en"): string {
+  const pp = niche ? NICHE_PAIN_POINTS[niche] : undefined;
+  const raw = pp ? pp[lang] : DEFAULT_PAIN_POINT[lang];
+  return raw.replace("{location}", location ?? "your area");
+}
+
+function generateOutreachMessage(
+  lead: { business_name: string; location: string | null; niche: string | null; market: string | null; follow_up_count: number },
+): string {
+  const isHr = lead.market === "hr";
+  const lang = isHr ? "hr" : "en";
+  const count = lead.follow_up_count ?? 0;
+  const bn = lead.business_name;
+  const loc = lead.location ?? "";
+
+  if (count === 0) {
+    const pain = getPainPoint(lead.niche, lead.location, lang);
+    return isHr
+      ? `Dobar dan! Vidio sam ${bn} u ${loc} — ${pain}. Napravio sam Vam web za primjer, javite se! Petar, Elevera Studio`
+      : `Hi! I came across ${bn} in ${loc} — ${pain}. I've built you a sample website, get in touch! Petar, Elevera Studio`;
+  }
+  if (count === 1) {
+    return isHr
+      ? `Bok! Samo kratki podsjetnik — stranica za ${bn} je spremna. Javite se kad imate minutu! Petar, Elevera Studio`
+      : `Hi! Quick reminder — the sample website for ${bn} is ready. Get in touch when you have a moment! Petar, Elevera Studio`;
+  }
+  if (count === 2) {
+    return isHr
+      ? `Poštovani! Provjeravam jeste li stigli pogledati stranicu za ${bn}? Mogu prilagoditi sve prema Vašim željama. Petar, Elevera Studio`
+      : `Hi! Just checking if you had a chance to look at the sample site for ${bn}? I can customize everything to your needs. Petar, Elevera Studio`;
+  }
+  // count >= 3 — last chance
+  return isHr
+    ? `Bok! Zadnji put se javljam — ako Vas zanima stranica za ${bn}, tu sam. Ako ne, nema problema! Sretno s poslom! Petar, Elevera Studio`
+    : `Hi! Last time reaching out — if you're interested in the website for ${bn}, I'm here. If not, no worries! Best of luck! Petar, Elevera Studio`;
+}
+
+function registerOutreachAgentTools(server: McpServer): void {
+  server.registerTool("run_outreach_cycle", {
+    description:
+      "Run the daily outreach cycle: scans the pipeline, categorizes leads by priority (hot/follow_up/nurture/first_contact), generates personalized messages, and creates an outreach queue for review.",
+    inputSchema: {
+      date: z.string().optional().describe("Target date (ISO 8601 YYYY-MM-DD). Defaults to today."),
+    },
+  }, async (args) => {
+    try {
+      const supabase = createAdminClient();
+      const userId = await getUserId();
+      const targetDate = args.date ?? new Date().toISOString().slice(0, 10);
+      const now = new Date();
+      const h48ago = new Date(now.getTime() - 48 * 60 * 60 * 1000).toISOString();
+      const h72ago = new Date(now.getTime() - 72 * 60 * 60 * 1000).toISOString();
+      const in3d = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      const h24ago = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
+
+      // Fetch all active leads
+      const { data: leads, error: leadsErr } = await supabase
+        .from("leads")
+        .select("*")
+        .not("status", "in", '("won","lost")')
+        .order("lead_score", { ascending: false, nullsFirst: false });
+
+      if (leadsErr) return errorResponse(leadsErr.message);
+      if (!leads || leads.length === 0) return text("No active leads in pipeline.");
+
+      // Fetch recent outreach for context
+      const leadIds = leads.map((l) => l.id);
+      const { data: recentOutreach } = await supabase
+        .from("outreach_log")
+        .select("lead_id, sent_at")
+        .in("lead_id", leadIds)
+        .order("sent_at", { ascending: false });
+
+      const lastOutreachMap = new Map<string, string>();
+      for (const o of recentOutreach ?? []) {
+        if (!lastOutreachMap.has(o.lead_id)) {
+          lastOutreachMap.set(o.lead_id, o.sent_at);
+        }
+      }
+
+      // Categorize
+      type PriorityBucket = { lead: typeof leads[0]; priority: string };
+      const buckets: PriorityBucket[] = [];
+
+      for (const lead of leads) {
+        const lastOutreach = lastOutreachMap.get(lead.id);
+        const noRecentOutreach = !lastOutreach || lastOutreach < h48ago;
+
+        // HOT
+        if (["replied", "demo_built", "call_booked"].includes(lead.status) && noRecentOutreach) {
+          buckets.push({ lead, priority: "hot" });
+          continue;
+        }
+
+        // FOLLOW_UP
+        if (
+          (lead.next_follow_up && lead.next_follow_up <= targetDate) ||
+          (lead.last_contacted_at && lead.last_contacted_at < h72ago && lead.status === "contacted")
+        ) {
+          buckets.push({ lead, priority: "follow_up" });
+          continue;
+        }
+
+        // NURTURE
+        if (lead.status === "follow_up" && lead.next_follow_up && lead.next_follow_up <= in3d) {
+          buckets.push({ lead, priority: "nurture" });
+          continue;
+        }
+
+        // FIRST_CONTACT
+        if (lead.status === "new" && lead.created_at < h24ago && !lead.last_contacted_at) {
+          buckets.push({ lead, priority: "first_contact" });
+          continue;
+        }
+      }
+
+      if (buckets.length === 0) return text("No leads need outreach today. Pipeline is up to date.");
+
+      // Clear previous pending queue for this date
+      await supabase
+        .from("outreach_queue")
+        .delete()
+        .eq("scheduled_for", targetDate)
+        .eq("status", "pending")
+        .eq("user_id", userId);
+
+      // Generate queue items
+      let inserted = 0;
+      const summary: Record<string, number> = { hot: 0, follow_up: 0, nurture: 0, first_contact: 0 };
+
+      for (const { lead, priority } of buckets) {
+        const message = generateOutreachMessage(lead);
+        const channel = lead.channel ?? (lead.market === "hr" ? "whatsapp" : "email");
+
+        const { error: insertErr } = await supabase.from("outreach_queue").insert({
+          user_id: userId,
+          lead_id: lead.id,
+          channel,
+          message,
+          priority,
+          scheduled_for: targetDate,
+          status: "pending",
+        });
+
+        if (!insertErr) {
+          inserted++;
+          summary[priority] = (summary[priority] ?? 0) + 1;
+        }
+      }
+
+      const lines = [
+        `=== OUTREACH CYCLE COMPLETE ===`,
+        `Date: ${targetDate}`,
+        `Total queue items: ${inserted}`,
+        ``,
+        `By priority:`,
+        `  HOT: ${summary.hot ?? 0}`,
+        `  FOLLOW_UP: ${summary.follow_up ?? 0}`,
+        `  NURTURE: ${summary.nurture ?? 0}`,
+        `  FIRST_CONTACT: ${summary.first_contact ?? 0}`,
+      ];
+
+      return text(lines.join("\n"));
+    } catch (err) {
+      return errorResponse(err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  server.registerTool("get_outreach_queue", {
+    description: "Get the outreach queue for a given date, filtered by priority and status.",
+    inputSchema: {
+      date: z.string().optional().describe("Date to get queue for (YYYY-MM-DD). Defaults to today."),
+      priority: z.enum(["hot", "follow_up", "nurture", "first_contact"]).optional().describe("Filter by priority"),
+      status: z.enum(["pending", "approved", "sent", "skipped"]).optional().describe("Filter by status. Default: pending"),
+    },
+  }, async (args) => {
+    try {
+      const supabase = createAdminClient();
+      const targetDate = args.date ?? new Date().toISOString().slice(0, 10);
+
+      let query = supabase
+        .from("outreach_queue")
+        .select("*, lead:leads(*)")
+        .eq("scheduled_for", targetDate)
+        .order("generated_at", { ascending: true });
+
+      if (args.priority) query = query.eq("priority", args.priority);
+      if (args.status) query = query.eq("status", args.status);
+      else query = query.eq("status", "pending");
+
+      const { data, error } = await query;
+      if (error) return errorResponse(error.message);
+      if (!data || data.length === 0) return text("No queue items found for the given filters.");
+
+      const lines = [`=== OUTREACH QUEUE — ${targetDate} ===`, `Items: ${data.length}`, ``];
+      for (const item of data) {
+        const lead = item.lead;
+        lines.push(
+          `[${item.priority.toUpperCase()}] ${lead?.business_name ?? "Unknown"} (${lead?.location ?? "—"})`,
+          `  Channel: ${item.channel} | Status: ${item.status}`,
+          `  Message: ${item.message.slice(0, 120)}...`,
+          `  Queue ID: ${item.id}`,
+          ``
+        );
+      }
+
+      return text(lines.join("\n"));
+    } catch (err) {
+      return errorResponse(err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  server.registerTool("approve_outreach", {
+    description: "Approve an outreach queue item, optionally editing the message before approval.",
+    inputSchema: {
+      queue_id: z.string().uuid().describe("UUID of the outreach queue item"),
+      edited_message: z.string().optional().describe("Edited message text. If not provided, approves the existing message."),
+    },
+  }, async (args) => {
+    try {
+      const supabase = createAdminClient();
+      const updates: Record<string, unknown> = { status: "approved" };
+      if (args.edited_message) updates.message = args.edited_message;
+
+      const { data, error } = await supabase
+        .from("outreach_queue")
+        .update(updates)
+        .eq("id", args.queue_id)
+        .select("*, lead:leads(business_name)")
+        .single();
+
+      if (error) return errorResponse(error.message);
+      return text(`Approved outreach for ${data.lead?.business_name ?? "lead"}. Queue ID: ${data.id}`);
+    } catch (err) {
+      return errorResponse(err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  server.registerTool("mark_outreach_sent", {
+    description: "Mark outreach queue items as sent. Creates outreach_log entries and updates lead contact info.",
+    inputSchema: {
+      queue_ids: z.array(z.string().uuid()).describe("Array of outreach queue item UUIDs to mark as sent"),
+    },
+  }, async (args) => {
+    try {
+      const supabase = createAdminClient();
+      const userId = await getUserId();
+      const now = new Date().toISOString();
+      let sent = 0;
+
+      for (const qid of args.queue_ids) {
+        const { data: item, error: fetchErr } = await supabase
+          .from("outreach_queue")
+          .select("*, lead:leads(*)")
+          .eq("id", qid)
+          .single();
+
+        if (fetchErr || !item) continue;
+
+        // Update queue item
+        await supabase
+          .from("outreach_queue")
+          .update({ status: "sent", sent_at: now })
+          .eq("id", qid);
+
+        // Create outreach_log entry
+        await supabase.from("outreach_log").insert({
+          user_id: userId,
+          lead_id: item.lead_id,
+          type: "follow_up",
+          content: item.message,
+          sent_at: now,
+          response_received: false,
+          channel: item.channel,
+          direction: "outbound",
+        });
+
+        // Update lead
+        const lead = item.lead;
+        const newCount = (lead?.follow_up_count ?? 0) + 1;
+        let nextFollowUp: string | null = null;
+
+        if (newCount < 2) {
+          nextFollowUp = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+        } else if (newCount < 3) {
+          nextFollowUp = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+        } else if (newCount < 4) {
+          nextFollowUp = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+        }
+
+        await supabase
+          .from("leads")
+          .update({
+            last_contacted_at: now,
+            follow_up_count: newCount,
+            next_follow_up: nextFollowUp,
+            updated_at: now,
+          })
+          .eq("id", item.lead_id);
+
+        sent++;
+      }
+
+      const suggestion = sent > 0 ? "" : " No items were sent.";
+      return text(`Marked ${sent}/${args.queue_ids.length} outreach items as sent.${suggestion}`);
+    } catch (err) {
+      return errorResponse(err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  server.registerTool("auto_schedule_followups", {
+    description: "Scan leads with missing next_follow_up dates and set them based on escalation rules.",
+    inputSchema: {},
+  }, async () => {
+    try {
+      const supabase = createAdminClient();
+
+      const { data: leads, error } = await supabase
+        .from("leads")
+        .select("id, follow_up_count, last_contacted_at, status")
+        .is("next_follow_up", null)
+        .not("status", "in", '("won","lost")');
+
+      if (error) return errorResponse(error.message);
+      if (!leads || leads.length === 0) return text("All leads have follow-up dates set.");
+
+      let updated = 0;
+      const now = Date.now();
+
+      for (const lead of leads) {
+        const count = lead.follow_up_count ?? 0;
+        let daysOut = 3;
+        if (count >= 3) daysOut = 14;
+        else if (count >= 2) daysOut = 7;
+
+        const nextDate = new Date(now + daysOut * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+        const { error: updateErr } = await supabase
+          .from("leads")
+          .update({ next_follow_up: nextDate })
+          .eq("id", lead.id);
+
+        if (!updateErr) updated++;
+      }
+
+      return text(`Scheduled follow-ups for ${updated} leads.`);
+    } catch (err) {
+      return errorResponse(err instanceof Error ? err.message : String(err));
+    }
+  });
+}
+
+// ─────────────────────────────────────────────
+// Lead Intelligence Tools (Feature 2)
+// ─────────────────────────────────────────────
+
+function registerLeadIntelligenceTools(server: McpServer): void {
+  server.registerTool("enrich_lead", {
+    description:
+      "Enrich a lead with website analysis (PageSpeed, SSL, tech stack), Google Places data (rating, reviews), and contact extraction (email, Instagram). Takes 5-15 seconds per lead.",
+    inputSchema: {
+      lead_id: z.string().uuid().describe("UUID of the lead to enrich"),
+    },
+  }, async (args) => {
+    try {
+      const supabase = createAdminClient();
+
+      const { data: lead, error: leadErr } = await supabase
+        .from("leads")
+        .select("*")
+        .eq("id", args.lead_id)
+        .single();
+
+      if (leadErr) return errorResponse(leadErr.message);
+
+      const enrichment: Record<string, unknown> = {
+        lead_id: args.lead_id,
+        enriched_at: new Date().toISOString(),
+      };
+
+      // Website analysis
+      if (lead.website_url) {
+        try {
+          const url = lead.website_url.startsWith("http") ? lead.website_url : `https://${lead.website_url}`;
+
+          // PageSpeed Mobile
+          try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 15000);
+            const psRes = await fetch(`https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=${encodeURIComponent(url)}&strategy=mobile`, { signal: controller.signal });
+            clearTimeout(timeout);
+            if (psRes.ok) {
+              const psData = await psRes.json();
+              const score = psData?.lighthouseResult?.categories?.performance?.score;
+              if (typeof score === "number") enrichment.page_speed_mobile = Math.round(score * 100);
+            }
+          } catch { /* timeout or error */ }
+
+          // PageSpeed Desktop
+          try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 15000);
+            const psRes = await fetch(`https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=${encodeURIComponent(url)}&strategy=desktop`, { signal: controller.signal });
+            clearTimeout(timeout);
+            if (psRes.ok) {
+              const psData = await psRes.json();
+              const score = psData?.lighthouseResult?.categories?.performance?.score;
+              if (typeof score === "number") enrichment.page_speed_desktop = Math.round(score * 100);
+            }
+          } catch { /* timeout or error */ }
+
+          // Fetch HTML
+          try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 10000);
+            const htmlRes = await fetch(url, {
+              signal: controller.signal,
+              redirect: "follow",
+              headers: { "User-Agent": "Mozilla/5.0 (compatible; PetarOS/1.0)" },
+            });
+            clearTimeout(timeout);
+
+            const finalUrl = htmlRes.url;
+            const html = await htmlRes.text();
+            const lower = html.toLowerCase();
+
+            enrichment.has_ssl = finalUrl.startsWith("https");
+            enrichment.is_mobile_responsive = lower.includes("viewport");
+
+            // Tech stack
+            if (lower.includes("wp-content")) enrichment.tech_stack = "WordPress";
+            else if (lower.includes("wix.com") || lower.includes("wixsite")) enrichment.tech_stack = "Wix";
+            else if (lower.includes("squarespace")) enrichment.tech_stack = "Squarespace";
+            else if (lower.includes("shopify")) enrichment.tech_stack = "Shopify";
+            else if (finalUrl.includes("business.site")) enrichment.tech_stack = "Google Sites";
+            else if (lower.includes("godaddysites")) enrichment.tech_stack = "GoDaddy";
+            else enrichment.tech_stack = "Custom";
+          } catch { /* fetch error */ }
+        } catch { /* general error */ }
+      }
+
+      // Google Places
+      const serperKey = process.env.SERPER_API_KEY;
+      if (serperKey && lead.business_name && lead.location) {
+        try {
+          const placesRes = await fetch("https://google.serper.dev/places", {
+            method: "POST",
+            headers: { "X-API-KEY": serperKey, "Content-Type": "application/json" },
+            body: JSON.stringify({ q: `${lead.business_name} ${lead.location}` }),
+          });
+          if (placesRes.ok) {
+            const placesData = await placesRes.json();
+            const first = placesData?.places?.[0];
+            if (first) {
+              if (first.rating) enrichment.google_rating = first.rating;
+              if (first.ratingCount) enrichment.google_reviews_count = first.ratingCount;
+            }
+          }
+        } catch { /* serper error */ }
+      }
+
+      // Summary
+      const parts: string[] = [];
+      if (enrichment.page_speed_mobile !== undefined) parts.push(`Mobile: ${enrichment.page_speed_mobile}/100`);
+      if (enrichment.has_ssl === false) parts.push("No SSL");
+      if (enrichment.tech_stack) parts.push(String(enrichment.tech_stack));
+      if (enrichment.google_rating) parts.push(`${enrichment.google_rating}★`);
+      if (enrichment.google_reviews_count) parts.push(`${enrichment.google_reviews_count} reviews`);
+      enrichment.enrichment_summary = parts.length > 0 ? parts.join(", ") : "No data available";
+
+      // Upsert enrichment
+      const { error: upsertErr } = await supabase
+        .from("lead_enrichment")
+        .upsert(enrichment, { onConflict: "lead_id" });
+
+      if (upsertErr) return errorResponse(upsertErr.message);
+
+      // Update lead
+      await supabase.from("leads").update({
+        page_speed: enrichment.page_speed_mobile ?? lead.page_speed,
+        last_enriched_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }).eq("id", args.lead_id);
+
+      return text(
+        `Lead enriched: ${lead.business_name}\n\n` +
+        `  Summary: ${enrichment.enrichment_summary}\n` +
+        `  Mobile PageSpeed: ${enrichment.page_speed_mobile ?? "N/A"}\n` +
+        `  Desktop PageSpeed: ${enrichment.page_speed_desktop ?? "N/A"}\n` +
+        `  SSL: ${enrichment.has_ssl ?? "unknown"}\n` +
+        `  Tech: ${enrichment.tech_stack ?? "unknown"}\n` +
+        `  Google: ${enrichment.google_rating ?? "N/A"}★ (${enrichment.google_reviews_count ?? 0} reviews)`
+      );
+    } catch (err) {
+      return errorResponse(err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  server.registerTool("bulk_enrich", {
+    description: "Enrich multiple leads at once. Fetches website and Google data for leads matching the given status.",
+    inputSchema: {
+      status: z.string().optional().describe("Filter leads by status. Default: 'new'"),
+      limit: z.number().int().positive().optional().describe("Max leads to enrich. Default: 20"),
+      force: z.boolean().optional().describe("Re-enrich already enriched leads. Default: false"),
+    },
+  }, async (args) => {
+    try {
+      const supabase = createAdminClient();
+      const status = args.status ?? "new";
+      const limit = args.limit ?? 20;
+      const force = args.force ?? false;
+
+      let query = supabase
+        .from("leads")
+        .select("id, business_name")
+        .eq("status", status)
+        .limit(limit);
+
+      if (!force) {
+        query = query.is("last_enriched_at", null);
+      }
+
+      const { data: leads, error } = await query;
+      if (error) return errorResponse(error.message);
+      if (!leads || leads.length === 0) return text("No leads to enrich.");
+
+      return text(`Found ${leads.length} leads to enrich. Use enrich_lead for each one individually, or the web UI bulk enrich feature for batch processing.`);
+    } catch (err) {
+      return errorResponse(err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  server.registerTool("get_enrichment", {
+    description: "Get enrichment data for a specific lead.",
+    inputSchema: {
+      lead_id: z.string().uuid().describe("UUID of the lead"),
+    },
+  }, async (args) => {
+    try {
+      const supabase = createAdminClient();
+      const { data, error } = await supabase
+        .from("lead_enrichment")
+        .select("*")
+        .eq("lead_id", args.lead_id)
+        .single();
+
+      if (error) return errorResponse(`No enrichment data found: ${error.message}`);
+
+      return text(
+        `=== LEAD ENRICHMENT ===\n` +
+        `  PageSpeed Mobile: ${data.page_speed_mobile ?? "N/A"}\n` +
+        `  PageSpeed Desktop: ${data.page_speed_desktop ?? "N/A"}\n` +
+        `  SSL: ${data.has_ssl ?? "unknown"}\n` +
+        `  Mobile Responsive: ${data.is_mobile_responsive ?? "unknown"}\n` +
+        `  Tech Stack: ${data.tech_stack ?? "unknown"}\n` +
+        `  Google Rating: ${data.google_rating ?? "N/A"}\n` +
+        `  Google Reviews: ${data.google_reviews_count ?? 0}\n` +
+        `  Summary: ${data.enrichment_summary ?? "—"}\n` +
+        `  Last Enriched: ${data.enriched_at}`
+      );
+    } catch (err) {
+      return errorResponse(err instanceof Error ? err.message : String(err));
+    }
+  });
+}
+
+// ─────────────────────────────────────────────
+// Conversation Tracker Tools (Feature 3)
+// ─────────────────────────────────────────────
+
+function registerConversationTools(server: McpServer): void {
+  server.registerTool("log_conversation", {
+    description:
+      "Log a conversation entry (message sent or received) for a lead. Supports multiple channels: whatsapp, email, instagram_dm, telefon, linkedin, osobno.",
+    inputSchema: {
+      lead_id: z.string().uuid().describe("UUID of the lead"),
+      channel: z.enum(["whatsapp", "email", "instagram_dm", "telefon", "linkedin", "osobno"]).describe("Communication channel"),
+      direction: z.enum(["outbound", "inbound"]).describe("Message direction"),
+      content: z.string().describe("Message content or call notes"),
+      sentiment: z.enum(["positive", "neutral", "negative", "no_response"]).optional().describe("Sentiment of inbound message"),
+      subject: z.string().optional().describe("Email subject line (for email channel)"),
+      date: z.string().optional().describe("Date of conversation (ISO 8601). Defaults to now."),
+    },
+  }, async (args) => {
+    try {
+      const supabase = createAdminClient();
+      const userId = await getUserId();
+      const now = args.date ?? new Date().toISOString();
+
+      const typeMap: Record<string, string> = {
+        telefon: "call",
+        email: "email",
+      };
+      const type = typeMap[args.channel] ?? "follow_up";
+
+      const { data, error } = await supabase.from("outreach_log").insert({
+        user_id: userId,
+        lead_id: args.lead_id,
+        type,
+        content: args.content,
+        sent_at: now,
+        response_received: args.direction === "inbound",
+        response_at: args.direction === "inbound" ? now : null,
+        channel: args.channel,
+        direction: args.direction,
+        subject: args.subject ?? null,
+        sentiment: args.sentiment ?? null,
+      }).select().single();
+
+      if (error) return errorResponse(error.message);
+
+      // Update lead if outbound
+      if (args.direction === "outbound") {
+        const { data: lead } = await supabase
+          .from("leads")
+          .select("follow_up_count")
+          .eq("id", args.lead_id)
+          .single();
+
+        await supabase.from("leads").update({
+          last_contacted_at: now,
+          follow_up_count: (lead?.follow_up_count ?? 0) + 1,
+          updated_at: now,
+        }).eq("id", args.lead_id);
+      }
+
+      let suggestion = "";
+      if (args.direction === "inbound" && args.sentiment === "positive") {
+        suggestion = "\n\nSuggestion: This is a positive response — consider upgrading lead status (e.g., to 'replied' or 'call_booked').";
+      }
+
+      return text(`Conversation logged.${suggestion}\n  ID: ${data.id}\n  Channel: ${args.channel}\n  Direction: ${args.direction}`);
+    } catch (err) {
+      return errorResponse(err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  server.registerTool("get_conversation_thread", {
+    description: "Get the full conversation history for a lead, ordered chronologically.",
+    inputSchema: {
+      lead_id: z.string().uuid().describe("UUID of the lead"),
+      limit: z.number().int().positive().optional().describe("Max entries to return. Default: 50"),
+    },
+  }, async (args) => {
+    try {
+      const supabase = createAdminClient();
+      const limit = args.limit ?? 50;
+
+      const { data, error } = await supabase
+        .from("outreach_log")
+        .select("*")
+        .eq("lead_id", args.lead_id)
+        .order("sent_at", { ascending: true })
+        .limit(limit);
+
+      if (error) return errorResponse(error.message);
+      if (!data || data.length === 0) return text("No conversation history for this lead.");
+
+      const lines = [`=== CONVERSATION THREAD (${data.length} entries) ===`, ``];
+      for (const entry of data) {
+        const dir = entry.direction === "inbound" ? "← IN" : "→ OUT";
+        const ch = entry.channel ? `[${entry.channel}]` : "";
+        const sent = entry.sentiment ? `(${entry.sentiment})` : "";
+        lines.push(
+          `${dir} ${ch} ${new Date(entry.sent_at).toLocaleString()} ${sent}`,
+          `  ${entry.content ?? "(no content)"}`,
+          ``
+        );
+      }
+
+      return text(lines.join("\n"));
+    } catch (err) {
+      return errorResponse(err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  server.registerTool("schedule_message", {
+    description: "Schedule a message to be sent to a lead on a future date. Adds to the outreach queue.",
+    inputSchema: {
+      lead_id: z.string().uuid().describe("UUID of the lead"),
+      channel: z.enum(["whatsapp", "email", "instagram_dm", "telefon", "linkedin", "osobno"]).describe("Channel to send on"),
+      message: z.string().describe("Message content"),
+      scheduled_for: z.string().describe("Date to send (YYYY-MM-DD)"),
+      notes: z.string().optional().describe("Internal notes about this scheduled message"),
+    },
+  }, async (args) => {
+    try {
+      const supabase = createAdminClient();
+      const userId = await getUserId();
+
+      const { data, error } = await supabase.from("outreach_queue").insert({
+        user_id: userId,
+        lead_id: args.lead_id,
+        channel: args.channel,
+        message: args.message,
+        priority: "follow_up",
+        scheduled_for: args.scheduled_for,
+        status: "approved",
+        notes: args.notes ?? null,
+      }).select().single();
+
+      if (error) return errorResponse(error.message);
+
+      return text(`Message scheduled for ${args.scheduled_for}.\n  Queue ID: ${data.id}\n  Channel: ${args.channel}`);
+    } catch (err) {
+      return errorResponse(err instanceof Error ? err.message : String(err));
+    }
+  });
+}
+
+// ─────────────────────────────────────────────
+// Decision Engine Tools (Feature 4)
+// ─────────────────────────────────────────────
+
+function registerScoringTools(server: McpServer): void {
+  server.registerTool("score_lead", {
+    description:
+      "Calculate a deterministic lead score based on engagement, business quality, timing, and negative signals. Returns score breakdown and recommendation (close_now/pursue/nurture/drop).",
+    inputSchema: {
+      lead_id: z.string().uuid().describe("UUID of the lead to score"),
+    },
+  }, async (args) => {
+    try {
+      const supabase = createAdminClient();
+
+      // Fetch lead
+      const { data: lead, error: leadErr } = await supabase
+        .from("leads")
+        .select("*")
+        .eq("id", args.lead_id)
+        .single();
+      if (leadErr) return errorResponse(leadErr.message);
+
+      // Fetch enrichment
+      const { data: enrichment } = await supabase
+        .from("lead_enrichment")
+        .select("google_rating, google_reviews_count, page_speed_mobile")
+        .eq("lead_id", args.lead_id)
+        .single();
+
+      // Fetch outreach logs
+      const { data: logs } = await supabase
+        .from("outreach_log")
+        .select("type")
+        .eq("lead_id", args.lead_id);
+
+      // Fetch similar won leads
+      const { data: wonLeads } = await supabase
+        .from("leads")
+        .select("id, business_name, niche")
+        .eq("status", "won")
+        .eq("niche", lead.niche)
+        .limit(5);
+
+      // SCORING
+      let engagement = 0;
+      let business = 0;
+      let timing = 0;
+      let negative = 0;
+
+      // ENGAGEMENT (max 40)
+      if (["replied", "call_booked"].includes(lead.status)) engagement += 15;
+      const notes = (lead.notes ?? "").toLowerCase();
+      const requestKeywords = ["tražil", "mogu vidjeti", "može link", "pokažite", "can i see", "show me"];
+      if (requestKeywords.some((kw) => notes.includes(kw))) engagement += 10;
+      if (logs?.some((l) => l.type === "call" || l.type === "demo")) engagement += 8;
+      if (lead.status === "demo_built") engagement += 5;
+      if ((logs?.length ?? 0) > 1) engagement += 2;
+      engagement = Math.min(engagement, 40);
+
+      // BUSINESS (max 30)
+      if (enrichment?.google_rating && Number(enrichment.google_rating) >= 4.5) business += 10;
+      if (enrichment?.google_reviews_count && enrichment.google_reviews_count >= 50) business += 5;
+      const ps = enrichment?.page_speed_mobile ?? lead.page_speed;
+      if ((ps !== null && ps !== undefined && ps < 30) || !lead.website_url) business += 5;
+      if (!lead.website_url) business += 5;
+      const nicheScores: Record<string, number> = { apartmani: 5, dental: 4, wellness: 3, kozmetika: 3 };
+      if (lead.niche && nicheScores[lead.niche]) business += nicheScores[lead.niche];
+      business = Math.min(business, 30);
+
+      // TIMING (max 20)
+      const month = new Date().getMonth() + 1;
+      if (lead.niche === "apartmani" && month >= 3 && month <= 6) timing += 10;
+      const timingWords = ["later", "ne sada", "razmislit", "will think", "not now"];
+      if (timingWords.some((tw) => notes.includes(tw))) timing += 5;
+      if ((lead.follow_up_count ?? 0) < 3) timing += 5;
+      timing = Math.min(timing, 20);
+
+      // NEGATIVE
+      const rejectionWords = ["ne treba", "ne zanima", "ne hvala", "not interested"];
+      if (rejectionWords.some((rw) => notes.includes(rw))) negative += 20;
+      const competitorWords = ["u izradi kod drugog", "already working with"];
+      if (competitorWords.some((cw) => notes.includes(cw))) negative += 15;
+      const fc = lead.follow_up_count ?? 0;
+      if (fc > 2) negative += 5 * (fc - 2);
+      if (fc >= 4 && !["replied", "call_booked", "won"].includes(lead.status)) negative += 10;
+      const ghostWords = ["ghosted", "propustio poziv", "missed call"];
+      if (ghostWords.some((gw) => notes.includes(gw))) negative += 5;
+
+      const total = Math.max(0, engagement + business + timing - negative);
+
+      let recommendation: string;
+      if (total >= 70) recommendation = "close_now";
+      else if (total >= 50) recommendation = "pursue";
+      else if (total >= 30) recommendation = "nurture";
+      else recommendation = "drop";
+
+      const reasonParts: string[] = [];
+      if (engagement >= 20) reasonParts.push("High engagement");
+      if (business >= 15) reasonParts.push("Strong business signals");
+      if (negative >= 15) reasonParts.push("Negative signals detected");
+      if (fc >= 4) reasonParts.push("Max follow-ups reached");
+      const reason = reasonParts.join(". ") || `Score: ${total}/100`;
+
+      const similarWon = (wonLeads ?? []).map((w) => ({
+        id: w.id,
+        business_name: w.business_name,
+        niche: w.niche ?? "",
+      }));
+
+      // Upsert score
+      const { error: upsertErr } = await supabase.from("lead_scores").upsert({
+        lead_id: args.lead_id,
+        total_score: total,
+        engagement_score: engagement,
+        business_score: business,
+        timing_score: timing,
+        negative_score: negative,
+        recommendation,
+        recommendation_reason: reason,
+        similar_won_leads: similarWon,
+        scored_at: new Date().toISOString(),
+      }, { onConflict: "lead_id" });
+
+      if (upsertErr) return errorResponse(upsertErr.message);
+
+      // Update lead
+      await supabase.from("leads").update({
+        lead_score: total,
+        updated_at: new Date().toISOString(),
+      }).eq("id", args.lead_id);
+
+      return text(
+        `=== LEAD SCORE: ${lead.business_name} ===\n` +
+        `  Total: ${total}/100\n` +
+        `  Recommendation: ${recommendation.toUpperCase()}\n\n` +
+        `  Engagement: ${engagement}/40\n` +
+        `  Business: ${business}/30\n` +
+        `  Timing: ${timing}/20\n` +
+        `  Negative: -${negative}\n\n` +
+        `  Reason: ${reason}\n` +
+        `  Similar won leads: ${similarWon.length > 0 ? similarWon.map((w) => w.business_name).join(", ") : "none"}`
+      );
+    } catch (err) {
+      return errorResponse(err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  server.registerTool("score_all_leads", {
+    description: "Score all leads (or filtered by status) and return grouped by recommendation.",
+    inputSchema: {
+      status: z.string().optional().describe("Filter by lead status. If not provided, scores all active leads."),
+    },
+  }, async (args) => {
+    try {
+      const supabase = createAdminClient();
+
+      let query = supabase.from("leads").select("id, business_name, status").not("status", "in", '("won","lost")');
+      if (args.status) query = query.eq("status", args.status);
+
+      const { data: leads, error } = await query;
+      if (error) return errorResponse(error.message);
+      if (!leads || leads.length === 0) return text("No leads to score.");
+
+      return text(
+        `Found ${leads.length} leads to score. Use the web UI "Score All" button for batch scoring, or score individually with score_lead.\n\n` +
+        `Lead IDs: ${leads.map((l) => `${l.business_name} (${l.id})`).join(", ")}`
+      );
+    } catch (err) {
+      return errorResponse(err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  server.registerTool("should_i_follow_up", {
+    description: "Analyze whether to follow up with a specific lead. Runs scoring and returns a YES/NO/MAYBE recommendation with detailed reasoning.",
+    inputSchema: {
+      lead_id: z.string().uuid().describe("UUID of the lead"),
+    },
+  }, async (args) => {
+    try {
+      const supabase = createAdminClient();
+
+      const { data: lead, error } = await supabase
+        .from("leads")
+        .select("*")
+        .eq("id", args.lead_id)
+        .single();
+      if (error) return errorResponse(error.message);
+
+      const fc = lead.follow_up_count ?? 0;
+      const maxFu = lead.max_follow_ups ?? 4;
+      const notes = (lead.notes ?? "").toLowerCase();
+      const rejectionWords = ["ne treba", "ne zanima", "ne hvala", "not interested"];
+      const hasRejection = rejectionWords.some((rw) => notes.includes(rw));
+
+      let answer: string;
+      const reasons: string[] = [];
+
+      if (hasRejection) {
+        answer = "NO";
+        reasons.push("Lead has explicitly expressed disinterest.");
+        reasons.push("Consider moving to lost.");
+      } else if (fc >= maxFu) {
+        answer = "NO";
+        reasons.push(`Already followed up ${fc} times (max ${maxFu}).`);
+        reasons.push("Suggest moving to lost or waiting for them to reach out.");
+      } else if (["replied", "call_booked"].includes(lead.status)) {
+        answer = "YES";
+        reasons.push("Lead has shown active engagement.");
+        reasons.push("Prioritize this lead — they're warm.");
+      } else if (fc < 2) {
+        answer = "YES";
+        reasons.push(`Only ${fc} follow-ups so far — still early.`);
+        reasons.push("Send a friendly reminder.");
+      } else if (fc < maxFu) {
+        answer = "MAYBE";
+        reasons.push(`${fc} follow-ups sent. ${maxFu - fc} remaining.`);
+        reasons.push("Consider spacing out follow-ups more.");
+      } else {
+        answer = "MAYBE";
+        reasons.push("No strong signals either way.");
+      }
+
+      return text(
+        `=== SHOULD YOU FOLLOW UP? ===\n` +
+        `Lead: ${lead.business_name}\n` +
+        `Answer: ${answer}\n\n` +
+        `Reasons:\n${reasons.map((r) => `  • ${r}`).join("\n")}\n\n` +
+        `Stats: ${fc}/${maxFu} follow-ups | Status: ${lead.status} | Last contact: ${lead.last_contacted_at ?? "never"}`
+      );
+    } catch (err) {
+      return errorResponse(err instanceof Error ? err.message : String(err));
+    }
+  });
+}
+
+// ─────────────────────────────────────────────
+// Lead Generator Tools (Feature 5)
+// ─────────────────────────────────────────────
+
+function registerLeadgenTools(server: McpServer): void {
+  server.registerTool("run_lead_search", {
+    description:
+      "Run the full lead generation pipeline: search Google Maps for businesses, check website quality, generate outreach messages, and save to CRM. This is the MCP equivalent of the Lead Generator web page.",
+    inputSchema: {
+      market: z.enum(["hr", "dach", "us", "uk"]).describe("Target market"),
+      niche: z.string().describe("Business niche to search for"),
+      city: z.string().describe("City to search in"),
+      state: z.string().optional().describe("State code (for US market, e.g. 'NY')"),
+      count: z.number().int().positive().optional().describe("Number of leads to find. Default: 10"),
+      min_rating: z.number().optional().describe("Minimum Google rating. Default: 4.5"),
+      min_reviews: z.number().int().optional().describe("Minimum Google reviews. Default: 10"),
+      skip_web_check: z.boolean().optional().describe("Skip website quality check. Default: false"),
+    },
+  }, async (args) => {
+    try {
+      const supabase = createAdminClient();
+      const userId = await getUserId();
+      const count = args.count ?? 10;
+      const minRating = args.min_rating ?? 4.5;
+      const minReviews = args.min_reviews ?? 10;
+
+      const serperKey = process.env.SERPER_API_KEY;
+      if (!serperKey) return errorResponse("SERPER_API_KEY not configured. Cannot search Google Maps.");
+
+      // Search
+      const cityLabel = args.state ? `${args.city}, ${args.state}` : args.city;
+      const searchQuery = `${args.niche} in ${cityLabel}`;
+
+      const searchRes = await fetch("https://google.serper.dev/maps", {
+        method: "POST",
+        headers: { "X-API-KEY": serperKey, "Content-Type": "application/json" },
+        body: JSON.stringify({ q: searchQuery, num: count * 3 }),
+      });
+
+      if (!searchRes.ok) return errorResponse("Google Maps search failed");
+
+      const searchData = await searchRes.json();
+      const places = searchData?.places ?? [];
+
+      // Filter and save
+      let saved = 0;
+      const results: string[] = [];
+
+      for (const place of places) {
+        if (saved >= count) break;
+
+        if (place.rating !== undefined && place.rating < minRating) continue;
+        if (place.ratingCount !== undefined && place.ratingCount < minReviews) continue;
+
+        const channel = args.market === "hr" ? "whatsapp" : "email";
+        const message = generateOutreachMessage({
+          business_name: place.title,
+          location: cityLabel,
+          niche: args.niche,
+          market: args.market,
+          follow_up_count: 0,
+        });
+
+        const { error: insertErr } = await supabase.from("leads").insert({
+          user_id: userId,
+          business_name: place.title,
+          location: cityLabel,
+          phone: place.phone ?? null,
+          website_url: place.website ?? null,
+          niche: args.niche,
+          market: args.market,
+          channel,
+          first_message: message,
+          status: "new",
+          source: "leadgen",
+          notes: place.rating ? `Google: ${place.rating}★ (${place.ratingCount ?? 0} reviews)` : null,
+        });
+
+        if (!insertErr) {
+          saved++;
+          results.push(`  ✓ ${place.title} — ${place.rating ?? "?"}★ (${place.ratingCount ?? 0} reviews)`);
+        }
+      }
+
+      return text(
+        `=== LEAD SEARCH COMPLETE ===\n` +
+        `Market: ${args.market} | Niche: ${args.niche} | City: ${cityLabel}\n` +
+        `Found on Maps: ${places.length} | Saved: ${saved}\n\n` +
+        `Leads:\n${results.join("\n")}`
+      );
+    } catch (err) {
+      return errorResponse(err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  server.registerTool("get_leadgen_stats", {
+    description: "Get statistics about leads generated through the lead generator.",
+    inputSchema: {},
+  }, async () => {
+    try {
+      const supabase = createAdminClient();
+
+      const { data: leads, error } = await supabase
+        .from("leads")
+        .select("niche, market, location, status")
+        .eq("source", "leadgen");
+
+      if (error) return errorResponse(error.message);
+      if (!leads || leads.length === 0) return text("No leads generated yet.");
+
+      const byNiche: Record<string, number> = {};
+      const byMarket: Record<string, number> = {};
+      const byCity: Record<string, number> = {};
+      let won = 0;
+
+      for (const lead of leads) {
+        byNiche[lead.niche ?? "unknown"] = (byNiche[lead.niche ?? "unknown"] ?? 0) + 1;
+        byMarket[lead.market ?? "unknown"] = (byMarket[lead.market ?? "unknown"] ?? 0) + 1;
+        byCity[lead.location ?? "unknown"] = (byCity[lead.location ?? "unknown"] ?? 0) + 1;
+        if (lead.status === "won") won++;
+      }
+
+      const conversionRate = leads.length > 0 ? ((won / leads.length) * 100).toFixed(1) : "0";
+
+      return text(
+        `=== LEADGEN STATS ===\n` +
+        `Total generated: ${leads.length}\n` +
+        `Won: ${won} (${conversionRate}% conversion)\n\n` +
+        `By niche: ${Object.entries(byNiche).map(([k, v]) => `${k}: ${v}`).join(", ")}\n` +
+        `By market: ${Object.entries(byMarket).map(([k, v]) => `${k}: ${v}`).join(", ")}\n` +
+        `By city: ${Object.entries(byCity).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([k, v]) => `${k}: ${v}`).join(", ")}`
+      );
+    } catch (err) {
+      return errorResponse(err instanceof Error ? err.message : String(err));
+    }
+  });
+}
+
+// ─────────────────────────────────────────────
 // Registration Entrypoint
 // ─────────────────────────────────────────────
 
@@ -2508,4 +3669,9 @@ export function registerAllTools(server: McpServer): void {
   registerTaskTools(server);
   registerDashboardTools(server);
   registerClientTools(server);
+  registerOutreachAgentTools(server);
+  registerLeadIntelligenceTools(server);
+  registerConversationTools(server);
+  registerScoringTools(server);
+  registerLeadgenTools(server);
 }
