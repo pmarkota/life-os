@@ -1,10 +1,10 @@
 "use client";
 
-import { MapPin } from "lucide-react";
+import { MapPin, UserCircle } from "lucide-react";
 import { motion } from "framer-motion";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import type { Lead, LeadNiche, LeadStatus } from "@/types";
+import type { Lead, LeadNiche, LeadStatus, Profile } from "@/types";
 
 // ─── Status border colors ────────────────────────────
 const STATUS_BORDER_COLOR: Record<LeadStatus, string> = {
@@ -49,16 +49,28 @@ function capitalizeNiche(niche: LeadNiche): string {
   return niche.charAt(0).toUpperCase() + niche.slice(1);
 }
 
+function getInitials(name: string | null | undefined): string {
+  if (!name) return "?";
+  const parts = name.trim().split(/\s+/);
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
 // ─── Props ───────────────────────────────────────────
 interface LeadCardProps {
   lead: Lead;
   isDragging?: boolean;
   onClick?: () => void;
+  salesPeople?: Profile[];
 }
 
-export function LeadCard({ lead, isDragging = false, onClick }: LeadCardProps) {
+export function LeadCard({ lead, isDragging = false, onClick, salesPeople }: LeadCardProps) {
   const nicheStyle = lead.niche ? NICHE_STYLES[lead.niche] : null;
   const contactLabel = getDaysSinceContact(lead.last_contacted_at);
+  const assignee =
+    lead.assigned_to && salesPeople
+      ? salesPeople.find((p) => p.id === lead.assigned_to) ?? null
+      : null;
 
   return (
     <motion.div
@@ -107,6 +119,32 @@ export function LeadCard({ lead, isDragging = false, onClick }: LeadCardProps) {
           <span className="text-xs truncate">{lead.location}</span>
         </div>
       )}
+
+      {/* Assignee chip */}
+      <div className="mt-1.5 flex items-center gap-1.5">
+        <span
+          className={cn(
+            "inline-flex items-center gap-1 rounded-full bg-[#27272A] px-1.5 py-0.5 text-[10px] font-medium",
+            assignee ? "text-[#FAFAFA]" : "text-[#71717A]",
+          )}
+          title={assignee ? `Assigned to ${assignee.full_name ?? assignee.email ?? "user"}` : "Unassigned"}
+        >
+          <span
+            className="h-1.5 w-1.5 rounded-full shrink-0"
+            style={{ backgroundColor: assignee ? "#0EA5E9" : "#71717A" }}
+          />
+          {assignee ? (
+            <span className="max-w-[110px] truncate">
+              {assignee.full_name ?? assignee.email ?? "User"}
+            </span>
+          ) : (
+            <>
+              <UserCircle className="h-2.5 w-2.5" />
+              <span>Unassigned</span>
+            </>
+          )}
+        </span>
+      </div>
 
       {/* Bottom row: niche badge + days since contact */}
       <div className="mt-2 flex items-center justify-between gap-2">

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { getCurrentProfile } from "@/lib/auth/profile";
 import type { Lead } from "@/types";
 
 type RouteParams = { params: Promise<{ id: string }> };
@@ -39,11 +40,22 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params;
     const supabase = await createClient();
+    const profile = await getCurrentProfile();
 
     const body = await request.json();
 
     // Remove fields that shouldn't be manually updated
-    const { id: _id, user_id: _userId, created_at: _createdAt, ...updateFields } = body;
+    const {
+      id: _id,
+      user_id: _userId,
+      created_at: _createdAt,
+      ...updateFields
+    } = body;
+
+    // Only admins can reassign leads. Strip assigned_to for non-admins.
+    if (profile?.role !== "admin" && "assigned_to" in updateFields) {
+      delete (updateFields as Record<string, unknown>).assigned_to;
+    }
 
     const updateData: Record<string, unknown> = {
       ...updateFields,

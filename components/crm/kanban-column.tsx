@@ -4,7 +4,7 @@ import { useDroppable, useDraggable } from "@dnd-kit/core";
 import { AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/utils";
 import { LeadCard } from "./lead-card";
-import type { Lead, LeadStatus } from "@/types";
+import type { Lead, LeadStatus, Profile } from "@/types";
 
 // ─── Status config ───────────────────────────────────
 const STATUS_CONFIG: Record<LeadStatus, { label: string; color: string }> = {
@@ -22,9 +22,10 @@ const STATUS_CONFIG: Record<LeadStatus, { label: string; color: string }> = {
 interface DraggableLeadProps {
   lead: Lead;
   onLeadClick: (lead: Lead) => void;
+  salesPeople?: Profile[];
 }
 
-function DraggableLead({ lead, onLeadClick }: DraggableLeadProps) {
+function DraggableLead({ lead, onLeadClick, salesPeople }: DraggableLeadProps) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: lead.id,
     data: { lead },
@@ -40,6 +41,7 @@ function DraggableLead({ lead, onLeadClick }: DraggableLeadProps) {
       <LeadCard
         lead={lead}
         isDragging={isDragging}
+        salesPeople={salesPeople}
         onClick={() => {
           if (!isDragging) onLeadClick(lead);
         }}
@@ -53,9 +55,10 @@ interface KanbanColumnProps {
   status: LeadStatus;
   leads: Lead[];
   onLeadClick: (lead: Lead) => void;
+  salesPeople?: Profile[];
 }
 
-export function KanbanColumn({ status, leads, onLeadClick }: KanbanColumnProps) {
+export function KanbanColumn({ status, leads, onLeadClick, salesPeople }: KanbanColumnProps) {
   const { setNodeRef, isOver } = useDroppable({ id: status });
   const config = STATUS_CONFIG[status];
 
@@ -100,6 +103,7 @@ export function KanbanColumn({ status, leads, onLeadClick }: KanbanColumnProps) 
                 key={lead.id}
                 lead={lead}
                 onLeadClick={onLeadClick}
+                salesPeople={salesPeople}
               />
             ))
           ) : (

@@ -18,6 +18,7 @@ interface LeadToSave {
   reviews: number | null;
   web_status: string;
   notes: string | null;
+  assigned_to: string | null;
 }
 
 // POST /api/leadgen/save-leads — Bulk save leads to CRM
@@ -73,6 +74,7 @@ export async function POST(request: NextRequest) {
 
       const { error } = await supabase.from("leads").insert({
         user_id: user.id,
+        assigned_to: lead.assigned_to ?? user.id,
         business_name: lead.business_name,
         contact_name: lead.contact_name,
         location: lead.location,

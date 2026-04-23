@@ -44,6 +44,17 @@ export async function GET(request: NextRequest) {
       query = query.ilike("location", `%${location}%`);
     }
 
+    // Filter by assigned_to (admin-only filter — RLS already restricts sales users)
+    // "unassigned" keyword filters for null
+    const assignedTo = searchParams.get("assigned_to");
+    if (assignedTo) {
+      if (assignedTo === "unassigned") {
+        query = query.is("assigned_to", null);
+      } else {
+        query = query.eq("assigned_to", assignedTo);
+      }
+    }
+
     // Search by business_name (partial match, case insensitive)
     const search = searchParams.get("search");
     if (search) {
@@ -119,6 +130,7 @@ export async function POST(request: NextRequest) {
       "first_message",
       "first_contact",
       "page_speed",
+      "assigned_to",
     ] as const;
 
     for (const field of optionalFields) {

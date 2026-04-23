@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
@@ -19,6 +19,7 @@ import {
   Menu,
   X,
   Terminal,
+  UserCog,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import {
@@ -26,22 +27,27 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import type { Profile, ProfilePermissions } from "@/types";
 
 interface NavItem {
   label: string;
   href: string;
   icon: React.ComponentType<{ className?: string }>;
+  adminOnly?: boolean;
+  hideFromSales?: boolean;
+  requiresPermission?: keyof ProfilePermissions;
 }
 
 const navItems: NavItem[] = [
   { label: "Command Center", href: "/", icon: LayoutDashboard },
   { label: "Outreach CRM", href: "/crm", icon: Users },
-  { label: "Outreach Agent", href: "/outreach", icon: Zap },
-  { label: "Lead Generator", href: "/leadgen", icon: Radar },
-  { label: "Finance", href: "/finance", icon: DollarSign },
-  { label: "Fitness", href: "/fitness", icon: Dumbbell },
-  { label: "University", href: "/university", icon: GraduationCap },
-  { label: "Clients", href: "/clients", icon: Building2 },
+  { label: "Outreach Agent", href: "/outreach", icon: Zap, requiresPermission: "can_generate_messages" },
+  { label: "Lead Generator", href: "/leadgen", icon: Radar, requiresPermission: "can_use_leadgen" },
+  { label: "Finance", href: "/finance", icon: DollarSign, hideFromSales: true },
+  { label: "Fitness", href: "/fitness", icon: Dumbbell, hideFromSales: true },
+  { label: "University", href: "/university", icon: GraduationCap, hideFromSales: true },
+  { label: "Clients", href: "/clients", icon: Building2, hideFromSales: true },
+  { label: "Sales People", href: "/sales-people", icon: UserCog, adminOnly: true },
 ];
 
 const SIDEBAR_EXPANDED = 240;
@@ -153,8 +159,31 @@ function NavLink({
 export function Sidebar() {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [role, setRole] = useState<Profile["role"] | null>(null);
+  const [permissions, setPermissions] = useState<ProfilePermissions | null>(null);
   const pathname = usePathname();
   const router = useRouter();
+
+  // Fetch current user's role + permissions once, to decide which nav items to show.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/me");
+        if (!res.ok) return;
+        const data: Profile = await res.json();
+        if (!cancelled) {
+          setRole(data.role);
+          setPermissions(data.permissions);
+        }
+      } catch {
+        // Silently ignore — restricted items simply won't appear.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleSignOut = useCallback(async () => {
     const supabase = createClient();
@@ -163,6 +192,17 @@ export function Sidebar() {
   }, [router]);
 
   const sidebarWidth = collapsed ? SIDEBAR_COLLAPSED : SIDEBAR_EXPANDED;
+
+  const visibleNavItems = navItems.filter((item) => {
+    // Wait for role to load before hiding anything; otherwise items flicker on first render.
+    if (role === null) return !item.adminOnly;
+    if (item.adminOnly && role !== "admin") return false;
+    if (item.hideFromSales && role === "sales") return false;
+    if (item.requiresPermission && role === "sales") {
+      if (!permissions?.[item.requiresPermission]) return false;
+    }
+    return true;
+  });
 
   const sidebarContent = (
     <div className="flex h-full flex-col">
@@ -207,7 +247,7 @@ export function Sidebar() {
 
       {/* Navigation */}
       <nav className="flex-1 space-y-1 px-3 py-4">
-        {navItems.map((item) => (
+        {visibleNavItems.map((item) => (
           <NavLink
             key={item.href}
             item={item}
@@ -362,7 +402,7 @@ export function Sidebar() {
 
                 {/* Navigation */}
                 <nav className="flex-1 space-y-1 px-3 py-4">
-                  {navItems.map((item) => {
+                  {visibleNavItems.map((item) => {
                     const Icon = item.icon;
                     const isActive = isActivePath(pathname, item.href);
                     return (
