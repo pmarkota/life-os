@@ -43,9 +43,14 @@ interface ProcessedLead {
   market: string;
   niche: string;
   owner_name: string | null;
+  contact_name: string | null;
   selected: boolean;
   removed: boolean;
 }
+
+// Real Chrome UA — many sites (Cloudflare/Akamai) return 403 to bot-like agents
+const BROWSER_UA =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 // ─── Inngest Function ────────────────────────────
 export const leadgenJob = inngest.createFunction(
@@ -212,8 +217,10 @@ export const leadgenJob = inngest.createFunction(
           extractEmail,
           extractInstagram,
           extractFacebook,
+          extractOwnerName,
           determineChannel,
           CONTACT_SUBPAGES,
+          expandSubpageVariants,
         } = await import("@/lib/leadgen/helpers");
 
         let webData = {
@@ -228,6 +235,9 @@ export const leadgenJob = inngest.createFunction(
           tech_stack: null as string | null,
         };
 
+        let homepageHtml = "";
+        let contactName: string | null = null;
+
         // Check website
         if (place.website_url && !config.skip_web_check) {
           const url = place.website_url.startsWith("http")
@@ -241,12 +251,17 @@ export const leadgenJob = inngest.createFunction(
               const resp = await fetch(url, {
                 signal: controller.signal,
                 redirect: "follow",
-                headers: { "User-Agent": "Mozilla/5.0 (compatible; PetarOS/1.0)" },
+                headers: {
+                  "User-Agent": BROWSER_UA,
+                  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                  "Accept-Language": "en-US,en;q=0.9,hr;q=0.8,de;q=0.7",
+                },
               });
               clearTimeout(timeout);
 
               const finalUrl = resp.url;
               const html = await resp.text();
+              homepageHtml = html;
               const lower = html.toLowerCase();
 
               const { score } = scoreWebsiteQuality(html, finalUrl);
@@ -261,77 +276,79 @@ export const leadgenJob = inngest.createFunction(
               webData.instagram = extractInstagram(html);
               webData.facebook = extractFacebook(html);
 
-              // Try subpages for email
+              // Try subpages for email (each base path → /, /, .html variants)
               if (!webData.email) {
                 const baseUrl = new URL(finalUrl).origin;
                 const subpages = CONTACT_SUBPAGES[config.market] ?? CONTACT_SUBPAGES.hr;
-                for (const subpage of subpages) {
-                  try {
-                    const sc = new AbortController();
-                    const st = setTimeout(() => sc.abort(), 5000);
-                    const sr = await fetch(`${baseUrl}${subpage}`, {
-                      signal: sc.signal,
-                      headers: { "User-Agent": "Mozilla/5.0 (compatible; PetarOS/1.0)" },
-                    });
-                    clearTimeout(st);
-                    if (sr.ok) {
-                      const sh = await sr.text();
-                      const foundEmail = extractEmail(sh);
-                      if (foundEmail) { webData.email = foundEmail; break; }
-                    }
-                  } catch { /* continue */ }
+                outer: for (const subpage of subpages) {
+                  for (const variant of expandSubpageVariants(subpage)) {
+                    try {
+                      const sc = new AbortController();
+                      const st = setTimeout(() => sc.abort(), 5000);
+                      const sr = await fetch(`${baseUrl}${variant}`, {
+                        signal: sc.signal,
+                        headers: {
+                          "User-Agent": BROWSER_UA,
+                          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                        },
+                      });
+                      clearTimeout(st);
+                      if (sr.ok) {
+                        const sh = await sr.text();
+                        const foundEmail = extractEmail(sh);
+                        if (!webData.instagram) {
+                          const foundIg = extractInstagram(sh);
+                          if (foundIg) webData.instagram = foundIg;
+                        }
+                        if (!contactName) {
+                          const foundOwner = extractOwnerName(place.snippet, sh);
+                          if (foundOwner) contactName = foundOwner;
+                        }
+                        if (foundEmail) { webData.email = foundEmail; break outer; }
+                      }
+                    } catch { /* continue */ }
+                  }
                 }
               }
 
-              // PageSpeed for non-GOOD
-              if (webData.web_status !== "GOOD") {
-                try {
-                  const pc = new AbortController();
-                  const pt = setTimeout(() => pc.abort(), 30000);
-                  const pr = await fetch(
-                    `https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=${encodeURIComponent(finalUrl)}&strategy=mobile`,
-                    { signal: pc.signal },
-                  );
-                  clearTimeout(pt);
-                  if (pr.ok) {
-                    const pd = await pr.json();
-                    const perf = pd?.lighthouseResult?.categories?.performance?.score;
-                    if (typeof perf === "number") webData.page_speed = Math.round(perf * 100);
-                  }
-                } catch { /* continue */ }
+              // Try to extract owner name from homepage + Google address snippet
+              if (!contactName) {
+                contactName = extractOwnerName(place.snippet, html);
               }
 
-              // Reclassify GOOD with bad PageSpeed
+              // PageSpeed for EVERY lead with a reachable site — so GOOD is trustworthy
+              try {
+                const pc = new AbortController();
+                const pt = setTimeout(() => pc.abort(), 30000);
+                const pr = await fetch(
+                  `https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=${encodeURIComponent(finalUrl)}&strategy=mobile`,
+                  { signal: pc.signal },
+                );
+                clearTimeout(pt);
+                if (pr.ok) {
+                  const pd = await pr.json();
+                  const perf = pd?.lighthouseResult?.categories?.performance?.score;
+                  if (typeof perf === "number") webData.page_speed = Math.round(perf * 100);
+                }
+              } catch { /* continue */ }
+
+              // Reclassify GOOD with bad PageSpeed — real performance data beats heuristics
               if (webData.web_status === "GOOD" && webData.page_speed !== null && webData.page_speed < 50) {
-                webData.web_status = "BAD_WEB";
+                webData.web_status = "MEDIOCRE";
+              }
+              // Also: BAD_WEB with surprisingly good PageSpeed → promote to MEDIOCRE
+              if (webData.web_status === "BAD_WEB" && webData.page_speed !== null && webData.page_speed >= 80) {
+                webData.web_status = "MEDIOCRE";
               }
             } catch {
-              // fetch failed
+              // fetch failed — keep NO_WEB default
             }
           }
         }
 
-        // Skip GOOD websites
-        if (webData.web_status === "GOOD" && !config.skip_web_check) {
-          return {
-            ...place,
-            email: webData.email,
-            instagram: webData.instagram,
-            facebook: webData.facebook,
-            web_status: "GOOD",
-            quality_score: webData.quality_score,
-            page_speed: webData.page_speed,
-            has_ssl: webData.has_ssl,
-            is_mobile_responsive: webData.is_mobile_responsive,
-            tech_stack: webData.tech_stack,
-            channel: "email",
-            message: "",
-            market: config.market,
-            niche: config.niche,
-            owner_name: null,
-            selected: false,
-            removed: true,
-          } as ProcessedLead;
+        // Owner name fallback from snippet alone (useful even when site is unreachable)
+        if (!contactName) {
+          contactName = extractOwnerName(place.snippet, homepageHtml || null);
         }
 
         // Determine channel
@@ -341,6 +358,9 @@ export const leadgenJob = inngest.createFunction(
           place.phone,
           webData.instagram,
         );
+
+        // GOOD sites stay visible but auto-deselected — user can still save them manually
+        const isGoodSite = webData.web_status === "GOOD" && !config.skip_web_check;
 
         // Generate message
         let message = "";
@@ -405,8 +425,10 @@ export const leadgenJob = inngest.createFunction(
           message,
           market: config.market,
           niche: config.niche,
-          owner_name: null,
-          selected: true,
+          owner_name: contactName,
+          contact_name: contactName,
+          // GOOD sites are visible but unchecked by default — user can opt in
+          selected: !isGoodSite,
           removed: false,
         } as ProcessedLead;
       });

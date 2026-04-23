@@ -66,29 +66,44 @@ const EMAIL_BLACKLIST = new Set([
 // Bad email prefixes
 const BAD_EMAIL_PREFIXES = ["noreply@", "no-reply@", "donotreply@", "mailer-daemon@", "postmaster@"];
 
-/** Extract email addresses from HTML, filtering blacklisted domains */
-export function extractEmail(html: string): string | null {
-  const emailRegex = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g;
-  const matches = html.match(emailRegex) || [];
+/** Decode Cloudflare email protection (`data-cfemail="..."` hex blob).
+ * Format: first byte is XOR key, remaining bytes are the email chars. */
+function decodeCfEmails(html: string): string[] {
+  const decoded: string[] = [];
+  const cfRegex = /data-cfemail="([a-f0-9]+)"/gi;
+  for (const match of html.matchAll(cfRegex)) {
+    const hex = match[1];
+    if (hex.length < 4 || hex.length % 2 !== 0) continue;
+    try {
+      const key = parseInt(hex.substring(0, 2), 16);
+      let out = "";
+      for (let i = 2; i < hex.length; i += 2) {
+        out += String.fromCharCode(parseInt(hex.substring(i, i + 2), 16) ^ key);
+      }
+      if (out.includes("@")) decoded.push(out);
+    } catch {
+      // skip malformed
+    }
+  }
+  return decoded;
+}
 
-  for (const email of matches) {
+/** Extract email addresses from HTML, filtering blacklisted domains.
+ * Also decodes Cloudflare-obfuscated emails. */
+export function extractEmail(html: string): string | null {
+  const cfEmails = decodeCfEmails(html);
+  const emailRegex = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g;
+  const regexMatches = html.match(emailRegex) || [];
+  const candidates = [...cfEmails, ...regexMatches];
+
+  for (const email of candidates) {
     const lower = email.toLowerCase();
     const domain = lower.split("@")[1];
     if (!domain) continue;
 
-    // Skip blacklisted domains
     if (EMAIL_BLACKLIST.has(domain)) continue;
-
-    // Skip image file extensions
     if (/\.(png|jpg|jpeg|gif|svg|webp|ico)$/i.test(email)) continue;
-
-    // Skip bad prefixes
     if (BAD_EMAIL_PREFIXES.some((prefix) => lower.startsWith(prefix))) continue;
-
-    // Skip emails with underscores
-    if (lower.includes("_")) continue;
-
-    // Skip overly long emails
     if (lower.length > 80) continue;
 
     return lower;
@@ -96,27 +111,31 @@ export function extractEmail(html: string): string | null {
   return null;
 }
 
-// Instagram paths to skip
+// Instagram paths/values to skip — not real profile handles
 const INSTAGRAM_SKIP = new Set([
   "p", "reel", "reels", "stories", "explore", "accounts",
   "about", "developer", "legal", "help", "privacy", "terms",
+  "embed", "embed.js", "static", "share", "direct", "tv",
+  "oembed", "web", "_next", "assets",
 ]);
 
-/** Extract Instagram handle from HTML — returns full URL */
+/** Extract Instagram profile URL from HTML — iterates ALL matches, skips
+ * embeds/posts/scripts, returns first real handle. */
 export function extractInstagram(html: string): string | null {
-  // Match instagram.com/username patterns
   const patterns = [
-    /instagram\.com\/([a-zA-Z0-9_.]+)/i,
-    /ig:\s*@?([a-zA-Z0-9_.]+)/i,
-    /instagram:\s*@?([a-zA-Z0-9_.]+)/i,
+    /instagram\.com\/([a-zA-Z0-9_.]+)/gi,
+    /\big:\s*@?([a-zA-Z0-9_.]+)/gi,
+    /\binstagram:\s*@?([a-zA-Z0-9_.]+)/gi,
   ];
 
   for (const pattern of patterns) {
-    const match = html.match(pattern);
-    if (match?.[1]) {
-      const handle = match[1].toLowerCase();
-      // Skip common non-profile paths
+    for (const match of html.matchAll(pattern)) {
+      if (!match[1]) continue;
+      const handle = match[1].toLowerCase().replace(/\.$/, "");
       if (INSTAGRAM_SKIP.has(handle)) continue;
+      if (handle.length < 2 || handle.length > 30) continue;
+      // Skip file-like handles (e.g. "logo.png" → "logo" after regex, but "embed.js" caught above)
+      if (/\.(js|css|png|jpg|jpeg|gif|svg|webp)$/i.test(match[1])) continue;
       return `https://instagram.com/${handle}`;
     }
   }
@@ -316,13 +335,36 @@ export function extractOwnerName(snippet: string | null, html: string | null): s
   return null;
 }
 
-/** Contact info subpage paths to try when email not found on homepage — market-specific */
+/** Contact info subpage paths to try when email not found on homepage — market-specific.
+ * Each base path is expanded at fetch time into /path, /path/, and /path.html variants. */
 export const CONTACT_SUBPAGES: Record<string, string[]> = {
-  hr: ["/kontakt", "/contact", "/kontaktirajte-nas", "/about", "/o-nama", "/impressum"],
-  us: ["/contact", "/contact-us", "/about", "/about-us", "/get-in-touch"],
-  uk: ["/contact", "/contact-us", "/about", "/about-us", "/get-in-touch"],
-  dach: ["/kontakt", "/contact", "/impressum", "/about", "/ueber-uns"],
+  hr: [
+    "/kontakt", "/contact", "/kontaktirajte-nas", "/about", "/o-nama",
+    "/impressum", "/tim", "/nas-tim", "/djelatnici", "/osoblje",
+    "/rezervacija", "/rezervacije", "/booking",
+  ],
+  us: [
+    "/contact", "/contact-us", "/about", "/about-us", "/get-in-touch",
+    "/team", "/our-team", "/staff", "/meet-the-team", "/meet-us",
+    "/doctors", "/stylists", "/book", "/book-now", "/reservations",
+  ],
+  uk: [
+    "/contact", "/contact-us", "/about", "/about-us", "/get-in-touch",
+    "/team", "/our-team", "/staff", "/meet-the-team",
+    "/doctors", "/stylists", "/book", "/book-now", "/reservations",
+  ],
+  dach: [
+    "/kontakt", "/contact", "/impressum", "/about", "/ueber-uns", "/über-uns",
+    "/team", "/unser-team", "/mitarbeiter", "/praxis", "/praxisteam",
+    "/buchen", "/termin", "/reservierung",
+  ],
 };
+
+/** Expand a base path into variants most CMSs serve: no-slash, trailing-slash, .html */
+export function expandSubpageVariants(path: string): string[] {
+  const base = path.replace(/\/$/, "");
+  return [base, `${base}/`, `${base}.html`];
+}
 
 /** Check if Croatian text has missing diacritics — ported from Python */
 export function hasMissingDiacritics(text: string): boolean {
