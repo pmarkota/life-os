@@ -27,6 +27,7 @@ export async function POST(request: NextRequest) {
       extractInstagram,
       extractFacebook,
       CONTACT_SUBPAGES,
+      expandSubpageVariants,
     } = await import("@/lib/leadgen/helpers");
 
     // Check if it's a social media URL
@@ -106,30 +107,34 @@ export async function POST(request: NextRequest) {
     const instagram = extractInstagram(html);
     const facebook = extractFacebook(html);
 
-    // If no email on homepage, try subpages (market-specific like Python)
+    // If no email on homepage, try subpages (market-specific, with variant expansion)
     if (!email) {
       const baseUrl = new URL(finalUrl).origin;
       const mkt = market ?? "hr";
       const subpages = CONTACT_SUBPAGES[mkt] ?? CONTACT_SUBPAGES.hr;
-      for (const subpage of subpages) {
-        try {
-          const controller = new AbortController();
-          const timeout = setTimeout(() => controller.abort(), 5000);
-          const subResponse = await fetch(`${baseUrl}${subpage}`, {
-            signal: controller.signal,
-            headers: {
-              "User-Agent":
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            },
-          });
-          clearTimeout(timeout);
-          if (subResponse.ok) {
-            const subHtml = await subResponse.text();
-            email = extractEmail(subHtml);
-            if (email) break;
+      outer: for (const subpage of subpages) {
+        for (const variant of expandSubpageVariants(subpage)) {
+          try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 5000);
+            const subResponse = await fetch(`${baseUrl}${variant}`, {
+              signal: controller.signal,
+              headers: {
+                "User-Agent":
+                  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                "Accept":
+                  "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+              },
+            });
+            clearTimeout(timeout);
+            if (subResponse.ok) {
+              const subHtml = await subResponse.text();
+              email = extractEmail(subHtml);
+              if (email) break outer;
+            }
+          } catch {
+            // Continue to next variant
           }
-        } catch {
-          // Continue to next subpage
         }
       }
     }

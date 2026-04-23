@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 
 interface LeadToSave {
   business_name: string;
+  contact_name: string | null;
   location: string;
   phone: string | null;
   website_url: string | null;
@@ -73,6 +74,7 @@ export async function POST(request: NextRequest) {
       const { error } = await supabase.from("leads").insert({
         user_id: user.id,
         business_name: lead.business_name,
+        contact_name: lead.contact_name,
         location: lead.location,
         phone: lead.phone,
         website_url: lead.website_url,

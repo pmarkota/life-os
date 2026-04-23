@@ -61,6 +61,7 @@ interface SearchResult {
   market: Market;
   niche: string;
   owner_name: string | null;
+  contact_name: string | null;
   selected: boolean;
   removed: boolean;
 }
@@ -505,6 +506,7 @@ export default function LeadGenPage() {
           body: JSON.stringify({
             leads: toSave.map((r) => ({
               business_name: r.business_name,
+              contact_name: r.contact_name ?? r.owner_name,
               location: r.location,
               phone: r.phone,
               website_url: r.website_url,
@@ -1067,6 +1069,19 @@ export default function LeadGenPage() {
                         <div className="space-y-4 p-4">
                           {/* Contact info */}
                           <div className="flex flex-wrap gap-3 text-xs">
+                            {(result.contact_name ?? result.owner_name) && (
+                              <span className="flex items-center gap-1 text-[#A1A1AA]">
+                                <span className="text-[#52525B]">Contact:</span>
+                                <span className="text-[#FAFAFA]">
+                                  {result.contact_name ?? result.owner_name}
+                                </span>
+                                <CopyBtn
+                                  text={
+                                    (result.contact_name ?? result.owner_name) as string
+                                  }
+                                />
+                              </span>
+                            )}
                             {result.phone && (
                               <span className="flex items-center gap-1 text-[#A1A1AA]">
                                 <Phone className="h-3 w-3" />
@@ -1087,7 +1102,15 @@ export default function LeadGenPage() {
                               </span>
                             )}
                             {result.page_speed !== null && (
-                              <span className="text-[#A1A1AA]">
+                              <span
+                                className={
+                                  result.page_speed >= 80
+                                    ? "text-[#22C55E]"
+                                    : result.page_speed >= 50
+                                      ? "text-[#EAB308]"
+                                      : "text-[#EF4444]"
+                                }
+                              >
                                 PageSpeed: {result.page_speed}/100
                               </span>
                             )}
