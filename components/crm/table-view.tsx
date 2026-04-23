@@ -12,11 +12,14 @@ import {
   MessageCircle,
   Globe,
   User,
+  UserCircle,
+  Users,
   Download,
   ArrowRightLeft,
   X,
   ChevronDown,
 } from "lucide-react";
+import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import {
   Tooltip,
@@ -25,7 +28,7 @@ import {
   TooltipProvider,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import type { Lead, LeadStatus, LeadNiche, LeadChannel, LeadMarket } from "@/types";
+import type { Lead, LeadStatus, LeadNiche, LeadChannel, LeadMarket, Profile } from "@/types";
 
 // ─── Status config ──────────────────────────────────
 const STATUS_CONFIG: Record<LeadStatus, { label: string; color: string }> = {
@@ -87,7 +90,8 @@ type SortField =
   | "last_contacted_at"
   | "next_follow_up"
   | "page_speed"
-  | "notes";
+  | "notes"
+  | "assigned_to";
 
 interface Column {
   key: SortField;
@@ -99,6 +103,7 @@ interface Column {
 const COLUMNS: Column[] = [
   { key: "business_name", label: "Business Name", width: "min-w-[200px]", sticky: true },
   { key: "status", label: "Status", width: "min-w-[130px]" },
+  { key: "assigned_to", label: "Assigned", width: "min-w-[160px]" },
   { key: "niche", label: "Niche", width: "min-w-[120px]" },
   { key: "location", label: "Location", width: "min-w-[120px]" },
   { key: "market", label: "Market", width: "min-w-[80px]" },
@@ -154,9 +159,18 @@ function getLeadValue(lead: Lead, field: SortField): string | number | null {
       return lead.page_speed;
     case "notes":
       return lead.notes;
+    case "assigned_to":
+      return lead.assigned_to;
     default:
       return null;
   }
+}
+
+function getInitials(name: string | null | undefined): string {
+  if (!name) return "?";
+  const parts = name.trim().split(/\s+/);
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
 // ─── Props ──────────────────────────────────────────
@@ -165,6 +179,9 @@ interface TableViewProps {
   onLeadClick: (lead: Lead) => void;
   onLeadUpdate: (lead: Lead) => void;
   onBulkMove?: (leadIds: string[], newStatus: LeadStatus) => Promise<void>;
+  profile?: Profile | null;
+  salesPeople?: Profile[];
+  onBulkAssignComplete?: () => void;
 }
 
 // ─── CSV Export helper ─────────────────────────────
@@ -226,15 +243,34 @@ function exportLeadsCsv(leads: Lead[]) {
 }
 
 // ─── Component ──────────────────────────────────────
-export function TableView({ leads, onLeadClick, onLeadUpdate, onBulkMove }: TableViewProps) {
+export function TableView({
+  leads,
+  onLeadClick,
+  onLeadUpdate,
+  onBulkMove,
+  profile,
+  salesPeople,
+  onBulkAssignComplete,
+}: TableViewProps) {
   const [sortField, setSortField] = useState<SortField>("business_name");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [lastSelectedIndex, setLastSelectedIndex] = useState<number | null>(null);
   const [moveDropdownOpen, setMoveDropdownOpen] = useState(false);
   const [bulkMoving, setBulkMoving] = useState(false);
+  const [assignDropdownOpen, setAssignDropdownOpen] = useState(false);
+  const [bulkAssigning, setBulkAssigning] = useState(false);
   const moveDropdownRef = useRef<HTMLDivElement>(null);
+  const assignDropdownRef = useRef<HTMLDivElement>(null);
   const tableContainerRef = useRef<HTMLDivElement>(null);
+
+  const isAdmin = profile?.role === "admin";
+
+  // Sales people plus admins — all assignable
+  const assignableUsers = useMemo(() => {
+    if (!salesPeople) return [];
+    return salesPeople.filter((p) => p.role === "sales" || p.role === "admin");
+  }, [salesPeople]);
 
   // Toggle sort column
   const handleSort = useCallback(
@@ -357,6 +393,36 @@ export function TableView({ leads, onLeadClick, onLeadUpdate, onBulkMove }: Tabl
       }
     },
     [onBulkMove, selectedIds, clearSelection],
+  );
+
+  const handleBulkAssign = useCallback(
+    async (assignedTo: string | null) => {
+      if (!isAdmin || selectedIds.size === 0) return;
+      setBulkAssigning(true);
+      setAssignDropdownOpen(false);
+      const ids = Array.from(selectedIds);
+      try {
+        const res = await fetch("/api/leads/bulk-assign", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ lead_ids: ids, assigned_to: assignedTo }),
+        });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body?.error ?? "Failed to assign leads");
+        }
+        toast.success(
+          `Assigned ${ids.length} lead${ids.length !== 1 ? "s" : ""}`,
+        );
+        clearSelection();
+        onBulkAssignComplete?.();
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Failed to assign leads");
+      } finally {
+        setBulkAssigning(false);
+      }
+    },
+    [isAdmin, selectedIds, clearSelection, onBulkAssignComplete],
   );
 
   const handleExportCsv = useCallback(() => {
@@ -487,6 +553,14 @@ export function TableView({ leads, onLeadClick, onLeadUpdate, onBulkMove }: Tabl
                   {/* Status */}
                   <td className="px-3 py-2">
                     <StatusBadge status={lead.status} />
+                  </td>
+
+                  {/* Assigned */}
+                  <td className="px-3 py-2">
+                    <AssigneeChip
+                      assignedTo={lead.assigned_to}
+                      salesPeople={salesPeople}
+                    />
                   </td>
 
                   {/* Niche */}
@@ -679,6 +753,82 @@ export function TableView({ leads, onLeadClick, onLeadUpdate, onBulkMove }: Tabl
               </AnimatePresence>
             </div>
 
+            {/* Bulk Assign (admin only) */}
+            {isAdmin && (
+              <div className="relative" ref={assignDropdownRef}>
+                <button
+                  onClick={() => setAssignDropdownOpen((prev) => !prev)}
+                  disabled={bulkAssigning}
+                  className={cn(
+                    "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors",
+                    "bg-[#8B5CF6]/15 text-[#8B5CF6] hover:bg-[#8B5CF6]/25",
+                    bulkAssigning && "opacity-50 cursor-not-allowed",
+                  )}
+                >
+                  <Users className="h-3.5 w-3.5" />
+                  Bulk Assign
+                  <ChevronDown
+                    className={cn(
+                      "h-3.5 w-3.5 transition-transform",
+                      assignDropdownOpen && "rotate-180",
+                    )}
+                  />
+                </button>
+
+                <AnimatePresence>
+                  {assignDropdownOpen && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 4, scale: 0.95 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: 4, scale: 0.95 }}
+                      transition={{ duration: 0.12 }}
+                      className="absolute bottom-full mb-2 left-0 w-56 rounded-lg border border-[#27272A] bg-[#18181B] py-1 shadow-2xl max-h-80 overflow-y-auto"
+                    >
+                      <button
+                        onClick={() => handleBulkAssign(null)}
+                        className="flex items-center gap-2 w-full px-3 py-2 text-sm text-left transition-colors hover:bg-[#27272A]/60"
+                      >
+                        <span
+                          className="h-2 w-2 rounded-full shrink-0"
+                          style={{ backgroundColor: "#71717A" }}
+                        />
+                        <span className="text-[#A1A1AA]">Unassigned</span>
+                      </button>
+                      {assignableUsers.length > 0 && (
+                        <div className="my-1 h-px bg-[#27272A]" />
+                      )}
+                      {assignableUsers.map((person) => {
+                        const name = person.full_name ?? person.email ?? "User";
+                        return (
+                          <button
+                            key={person.id}
+                            onClick={() => handleBulkAssign(person.id)}
+                            className="flex items-center gap-2 w-full px-3 py-2 text-sm text-left transition-colors hover:bg-[#27272A]/60"
+                          >
+                            <span
+                              className="h-2 w-2 rounded-full shrink-0"
+                              style={{ backgroundColor: "#0EA5E9" }}
+                            />
+                            <span className="flex items-center justify-center h-5 w-5 rounded-full bg-[#0EA5E9]/20 text-[10px] font-semibold text-[#0EA5E9] shrink-0">
+                              {getInitials(name)}
+                            </span>
+                            <span className="text-[#FAFAFA] truncate flex-1">
+                              {name}
+                            </span>
+                            {person.role === "admin" && (
+                              <span className="shrink-0 rounded-md bg-[#F59E0B]/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-[#F59E0B]">
+                                Admin
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+            )}
+
             {/* Export CSV */}
             <button
               onClick={handleExportCsv}
@@ -786,6 +936,52 @@ function FollowUpDate({ dateStr }: { dateStr: string }) {
       )}
     >
       {formatDate(dateStr)}
+    </span>
+  );
+}
+
+function AssigneeChip({
+  assignedTo,
+  salesPeople,
+}: {
+  assignedTo: string | null;
+  salesPeople?: Profile[];
+}) {
+  const assignee =
+    assignedTo && salesPeople
+      ? salesPeople.find((p) => p.id === assignedTo) ?? null
+      : null;
+
+  if (!assignee) {
+    return (
+      <span
+        className="inline-flex items-center gap-1.5 rounded-full bg-[#27272A] px-2 py-0.5 text-[11px] font-medium text-[#71717A]"
+        title="Unassigned"
+      >
+        <span
+          className="h-1.5 w-1.5 rounded-full shrink-0"
+          style={{ backgroundColor: "#71717A" }}
+        />
+        <UserCircle className="h-3 w-3" />
+        <span>Unassigned</span>
+      </span>
+    );
+  }
+
+  const name = assignee.full_name ?? assignee.email ?? "User";
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 rounded-full bg-[#27272A] px-2 py-0.5 text-[11px] font-medium text-[#FAFAFA]"
+      title={`Assigned to ${name}${assignee.role === "admin" ? " (admin)" : ""}`}
+    >
+      <span
+        className="h-1.5 w-1.5 rounded-full shrink-0"
+        style={{ backgroundColor: "#0EA5E9" }}
+      />
+      <span className="flex items-center justify-center h-4 w-4 rounded-full bg-[#0EA5E9]/20 text-[9px] font-semibold text-[#0EA5E9] shrink-0">
+        {getInitials(name)}
+      </span>
+      <span className="max-w-[100px] truncate">{name}</span>
     </span>
   );
 }

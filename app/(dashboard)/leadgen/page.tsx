@@ -22,12 +22,15 @@ import {
   Settings2,
   ChevronDown,
   ChevronUp,
+  UserCircle,
+  Users,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
+import type { Profile } from "@/types";
 
 // ─── Types ───────────────────────────────────────
 type Market = "hr" | "dach" | "us" | "uk";
@@ -64,6 +67,7 @@ interface SearchResult {
   contact_name: string | null;
   selected: boolean;
   removed: boolean;
+  assigned_to: string | null;
 }
 
 type Phase = "configure" | "search" | "review";
@@ -247,6 +251,37 @@ export default function LeadGenPage() {
   const [saving, setSaving] = useState(false);
   const [regeneratingIdx, setRegeneratingIdx] = useState<number | null>(null);
 
+  // Assignment state (multi-user support)
+  const [currentProfile, setCurrentProfile] = useState<Profile | null>(null);
+  const [salesPeople, setSalesPeople] = useState<Profile[]>([]);
+  const [defaultAssignee, setDefaultAssignee] = useState<string | null>(null);
+  const [bulkAssignOpen, setBulkAssignOpen] = useState(false);
+
+  const isAdmin = currentProfile?.role === "admin";
+
+  // ─── Load current user + sales people ──────────
+  useEffect(() => {
+    async function loadProfiles() {
+      try {
+        const [meRes, spRes] = await Promise.all([
+          fetch("/api/me"),
+          fetch("/api/sales-people"),
+        ]);
+        if (meRes.ok) {
+          const me = (await meRes.json()) as Profile;
+          setCurrentProfile(me);
+        }
+        if (spRes.ok) {
+          const sp = (await spRes.json()) as Profile[];
+          setSalesPeople(sp);
+        }
+      } catch {
+        // silent — assignment UI simply won't render
+      }
+    }
+    loadProfiles();
+  }, []);
+
   // ─── Resume active job on page load ──────────
   useEffect(() => {
     async function checkActiveJob() {
@@ -297,24 +332,33 @@ export default function LeadGenPage() {
 
         // Show live results as they come in
         if (job.results && job.results.length > 0) {
-          setRawResults(job.results);
+          const withAssignee: SearchResult[] = (job.results as SearchResult[]).map(
+            (r) => ({ ...r, assigned_to: r.assigned_to ?? defaultAssignee }),
+          );
+          setRawResults(withAssignee);
         }
 
         if (job.status === "completed") {
           if (pollRef.current) clearInterval(pollRef.current);
           setSearching(false);
-          setResults(job.results ?? []);
+          const raw = (job.results ?? []) as SearchResult[];
+          const withAssignee: SearchResult[] = raw.map((r) => ({
+            ...r,
+            assigned_to: r.assigned_to ?? defaultAssignee,
+          }));
+          setResults(withAssignee);
           setPhase("review");
-          const qualifying = (job.results ?? []).filter(
-            (r: SearchResult) => !r.removed,
-          ).length;
+          const qualifying = withAssignee.filter((r) => !r.removed).length;
           toast.success(`Found ${qualifying} leads ready for review`);
         } else if (job.status === "failed") {
           if (pollRef.current) clearInterval(pollRef.current);
           setSearching(false);
           toast.error(job.error ?? "Job failed");
           if (job.results && job.results.length > 0) {
-            setResults(job.results);
+            const withAssignee: SearchResult[] = (job.results as SearchResult[]).map(
+              (r) => ({ ...r, assigned_to: r.assigned_to ?? defaultAssignee }),
+            );
+            setResults(withAssignee);
             setPhase("review");
           } else {
             setPhase("configure");
@@ -323,7 +367,10 @@ export default function LeadGenPage() {
           if (pollRef.current) clearInterval(pollRef.current);
           setSearching(false);
           if (job.results && job.results.length > 0) {
-            setResults(job.results);
+            const withAssignee: SearchResult[] = (job.results as SearchResult[]).map(
+              (r) => ({ ...r, assigned_to: r.assigned_to ?? defaultAssignee }),
+            );
+            setResults(withAssignee);
             setPhase("review");
           } else {
             setPhase("configure");
@@ -333,7 +380,7 @@ export default function LeadGenPage() {
         // poll failed, keep trying
       }
     }, 3000);
-  }, []);
+  }, [defaultAssignee]);
 
   // ─── Config handlers ─────────────────────────────
   const addCity = useCallback(() => {
@@ -452,6 +499,43 @@ export default function LeadGenPage() {
     );
   }, []);
 
+  const updateAssignee = useCallback(
+    (idx: number, assignedTo: string | null) => {
+      setResults((prev) =>
+        prev.map((r, i) => (i === idx ? { ...r, assigned_to: assignedTo } : r)),
+      );
+    },
+    [],
+  );
+
+  const bulkAssign = useCallback(
+    (assignedTo: string | null) => {
+      let count = 0;
+      setResults((prev) =>
+        prev.map((r) => {
+          if (!r.removed && r.selected) {
+            count += 1;
+            return { ...r, assigned_to: assignedTo };
+          }
+          return r;
+        }),
+      );
+      setBulkAssignOpen(false);
+      if (count === 0) {
+        toast.error("No leads selected");
+        return;
+      }
+      const label =
+        assignedTo === null
+          ? "Unassigned"
+          : salesPeople.find((p) => p.id === assignedTo)?.full_name ??
+            salesPeople.find((p) => p.id === assignedTo)?.email ??
+            "assignee";
+      toast.success(`Assigned ${count} leads to ${label}`);
+    },
+    [salesPeople],
+  );
+
   const regenerateMessage = useCallback(
     async (idx: number) => {
       const lead = results[idx];
@@ -521,6 +605,7 @@ export default function LeadGenPage() {
               reviews: r.reviews,
               web_status: r.web_status,
               notes: null,
+              assigned_to: r.assigned_to ?? null,
             })),
           }),
         });
@@ -709,6 +794,38 @@ export default function LeadGenPage() {
                   </div>
                 )}
               </motion.div>
+            )}
+
+            {/* Default assignee (admin only) */}
+            {isAdmin && (
+              <div>
+                <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-[#A1A1AA]">
+                  <UserCircle className="h-4 w-4" />
+                  Assign new leads to
+                </h3>
+                <div className="relative">
+                  <select
+                    value={defaultAssignee ?? ""}
+                    onChange={(e) =>
+                      setDefaultAssignee(e.target.value === "" ? null : e.target.value)
+                    }
+                    className="w-full appearance-none rounded-lg border border-[#27272A] bg-[#18181B] px-4 py-2.5 pr-10 text-sm text-[#FAFAFA] focus:border-[#0EA5E9] focus:outline-none"
+                  >
+                    <option value="">Myself (default)</option>
+                    {salesPeople
+                      .filter((p) => p.id !== currentProfile?.id)
+                      .map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.full_name ?? p.email} ({p.email})
+                        </option>
+                      ))}
+                  </select>
+                  <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#71717A]" />
+                </div>
+                <p className="mt-2 text-xs text-[#71717A]">
+                  New leads from this run will be assigned to the selected person. You can override per lead in the Review step.
+                </p>
+              </div>
             )}
 
             {/* Advanced settings */}
@@ -952,16 +1069,60 @@ export default function LeadGenPage() {
               ))}
             </div>
 
-            {/* Back button */}
-            <Button
-              onClick={() => setPhase("configure")}
-              variant="ghost"
-              size="sm"
-              className="text-[#71717A] hover:text-[#A1A1AA]"
-            >
-              <ChevronLeft className="mr-1 h-4 w-4" />
-              Back to Configure
-            </Button>
+            {/* Back button + Bulk assign (admin) */}
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <Button
+                onClick={() => setPhase("configure")}
+                variant="ghost"
+                size="sm"
+                className="text-[#71717A] hover:text-[#A1A1AA]"
+              >
+                <ChevronLeft className="mr-1 h-4 w-4" />
+                Back to Configure
+              </Button>
+
+              {isAdmin && (
+                <div className="relative">
+                  <Button
+                    onClick={() => setBulkAssignOpen((prev) => !prev)}
+                    variant="outline"
+                    size="sm"
+                    disabled={selectedCount === 0}
+                    className="border-[#27272A] text-[#A1A1AA] hover:text-[#FAFAFA] hover:bg-[#27272A] disabled:opacity-40"
+                  >
+                    <Users className="mr-1 h-3 w-3" />
+                    Bulk assign ({selectedCount})
+                    <ChevronDown className="ml-1 h-3 w-3" />
+                  </Button>
+                  <AnimatePresence>
+                    {bulkAssignOpen && (
+                      <motion.div
+                        initial={{ opacity: 0, y: -4 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -4 }}
+                        className="absolute right-0 top-full z-20 mt-1 w-56 overflow-hidden rounded-lg border border-[#27272A] bg-[#18181B] shadow-lg"
+                      >
+                        <button
+                          onClick={() => bulkAssign(null)}
+                          className="block w-full px-3 py-2 text-left text-sm text-[#A1A1AA] hover:bg-[#27272A] hover:text-[#FAFAFA] transition-colors"
+                        >
+                          Unassigned
+                        </button>
+                        {salesPeople.map((p) => (
+                          <button
+                            key={p.id}
+                            onClick={() => bulkAssign(p.id)}
+                            className="block w-full px-3 py-2 text-left text-sm text-[#A1A1AA] hover:bg-[#27272A] hover:text-[#FAFAFA] transition-colors"
+                          >
+                            {p.full_name ?? p.email}
+                          </button>
+                        ))}
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+              )}
+            </div>
 
             {/* Leads table */}
             <div className="space-y-2">
@@ -1120,6 +1281,37 @@ export default function LeadGenPage() {
                               </Badge>
                             )}
                           </div>
+
+                          {/* Per-lead assignment (admin only) */}
+                          {isAdmin && (
+                            <div>
+                              <label className="mb-1 flex items-center gap-1 text-xs text-[#71717A]">
+                                <UserCircle className="h-3 w-3" />
+                                Assign to
+                              </label>
+                              <div className="relative inline-block">
+                                <select
+                                  value={result.assigned_to ?? ""}
+                                  onChange={(e) =>
+                                    updateAssignee(
+                                      idx,
+                                      e.target.value === "" ? null : e.target.value,
+                                    )
+                                  }
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="appearance-none rounded-lg border border-[#27272A] bg-[#09090B] px-3 py-1.5 pr-8 text-xs text-[#FAFAFA] focus:border-[#0EA5E9] focus:outline-none"
+                                >
+                                  <option value="">Unassigned</option>
+                                  {salesPeople.map((p) => (
+                                    <option key={p.id} value={p.id}>
+                                      {p.full_name ?? p.email}
+                                    </option>
+                                  ))}
+                                </select>
+                                <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-[#71717A]" />
+                              </div>
+                            </div>
+                          )}
 
                           {/* Message */}
                           <div>

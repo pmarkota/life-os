@@ -12,6 +12,7 @@ import {
   RefreshCw,
   X,
   Zap,
+  UserCircle,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -26,7 +27,7 @@ import { LeadDetailModal } from "@/components/crm/lead-detail-modal";
 import { AddLeadModal } from "@/components/crm/add-lead-modal";
 import { BulkEnrichModal } from "@/components/crm/bulk-enrich-modal";
 import { ScoredView } from "@/components/crm/scored-view";
-import type { Lead, LeadStatus, LeadNiche, LeadChannel, LeadMarket } from "@/types";
+import type { Lead, LeadStatus, LeadNiche, LeadChannel, LeadMarket, Profile } from "@/types";
 
 // ─── Status config (updated statuses) ───────────────
 const STATUS_CONFIG: Record<LeadStatus, { label: string; color: string }> = {
@@ -121,6 +122,9 @@ function isNeedsAction(lead: Lead): boolean {
   return followUpDate <= new Date(); // Follow-up date is today or past → "⚠️ DA"
 }
 
+// ─── Assigned-to filter value: null = "All", "unassigned" = unassigned, or profile id ─
+type AssignedFilter = null | "unassigned" | string;
+
 export default function CrmPage() {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [loading, setLoading] = useState(true);
@@ -135,6 +139,11 @@ export default function CrmPage() {
   const [showFilters, setShowFilters] = useState(false);
   const [currentView, setCurrentView] = useState<CrmView>("board");
 
+  // Multi-user state
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [salesPeople, setSalesPeople] = useState<Profile[]>([]);
+  const [assignedFilter, setAssignedFilter] = useState<AssignedFilter>(null);
+
   // Modal state
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
@@ -146,6 +155,7 @@ export default function CrmPage() {
     try {
       const params = new URLSearchParams();
       if (search) params.set("search", search);
+      if (assignedFilter !== null) params.set("assigned_to", assignedFilter);
 
       const res = await fetch(`/api/leads?${params.toString()}`);
       if (!res.ok) throw new Error("Failed to fetch leads");
@@ -156,11 +166,38 @@ export default function CrmPage() {
     } finally {
       setLoading(false);
     }
-  }, [search]);
+  }, [search, assignedFilter]);
 
   useEffect(() => {
     fetchLeads();
   }, [fetchLeads]);
+
+  // ── Fetch current user profile & sales people ────
+  useEffect(() => {
+    let cancelled = false;
+    async function loadUsers() {
+      try {
+        const [meRes, peopleRes] = await Promise.all([
+          fetch("/api/me"),
+          fetch("/api/sales-people"),
+        ]);
+        if (!cancelled && meRes.ok) {
+          const me = (await meRes.json()) as Profile;
+          setProfile(me);
+        }
+        if (!cancelled && peopleRes.ok) {
+          const people = (await peopleRes.json()) as Profile[];
+          setSalesPeople(people);
+        }
+      } catch {
+        // Silently ignore — auth layers handle redirect
+      }
+    }
+    loadUsers();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // ── Check if any advanced filter is active ────────
   const hasActiveFilters =
@@ -170,7 +207,8 @@ export default function CrmPage() {
     channelFilter.size > 0 ||
     hasFollowUpOnly ||
     dateFrom !== null ||
-    dateTo !== null;
+    dateTo !== null ||
+    assignedFilter !== null;
 
   const clearAllFilters = useCallback(() => {
     setNicheFilter("");
@@ -180,6 +218,7 @@ export default function CrmPage() {
     setHasFollowUpOnly(false);
     setDateFrom(null);
     setDateTo(null);
+    setAssignedFilter(null);
   }, []);
 
   // ── Toggle helpers for multi-select filters ──────
@@ -698,6 +737,58 @@ export default function CrmPage() {
             ))}
           </div>
 
+          {/* Assigned-to filter (admin only) */}
+          {profile?.role === "admin" && (
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs text-[#71717A] w-14 shrink-0">Assigned:</span>
+              <Badge
+                className={`cursor-pointer text-xs ${
+                  assignedFilter === null
+                    ? "bg-[#0EA5E9]/15 text-[#0EA5E9] border-[#0EA5E9]/30"
+                    : "bg-transparent text-[#A1A1AA] border-[#27272A] hover:border-[#3F3F46]"
+                }`}
+                onClick={() => setAssignedFilter(null)}
+              >
+                All
+              </Badge>
+              <Badge
+                className={`cursor-pointer text-xs ${
+                  assignedFilter === "unassigned"
+                    ? "bg-[#0EA5E9]/15 text-[#0EA5E9] border-[#0EA5E9]/30"
+                    : "bg-transparent text-[#A1A1AA] border-[#27272A] hover:border-[#3F3F46]"
+                }`}
+                onClick={() => setAssignedFilter("unassigned")}
+              >
+                <UserCircle className="h-3 w-3 mr-1" />
+                Unassigned
+              </Badge>
+              {salesPeople
+                .filter((p) => p.role === "sales" || p.role === "admin")
+                .map((p) => {
+                  const label = p.full_name ?? p.email ?? "User";
+                  const active = assignedFilter === p.id;
+                  return (
+                    <Badge
+                      key={p.id}
+                      className={`cursor-pointer text-xs gap-1 ${
+                        active
+                          ? "bg-[#0EA5E9]/15 text-[#0EA5E9] border-[#0EA5E9]/30"
+                          : "bg-transparent text-[#A1A1AA] border-[#27272A] hover:border-[#3F3F46]"
+                      }`}
+                      onClick={() => setAssignedFilter(active ? null : p.id)}
+                    >
+                      <span className="truncate max-w-[140px]">{label}</span>
+                      {p.role === "admin" && (
+                        <span className="shrink-0 rounded bg-[#F59E0B]/20 px-1 text-[9px] font-semibold uppercase text-[#F59E0B]">
+                          Admin
+                        </span>
+                      )}
+                    </Badge>
+                  );
+                })}
+            </div>
+          )}
+
           {/* Date range filter */}
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-xs text-[#71717A] w-14 shrink-0">First Contact:</span>
@@ -752,6 +843,7 @@ export default function CrmPage() {
             leads={viewLeads}
             onLeadMove={handleLeadMove}
             onLeadClick={handleLeadClick}
+            salesPeople={salesPeople}
           />
         ) : currentView === "scored" ? (
           <ScoredView
@@ -764,6 +856,9 @@ export default function CrmPage() {
             onLeadClick={handleLeadClick}
             onLeadUpdate={handleLeadUpdate}
             onBulkMove={handleBulkMove}
+            profile={profile}
+            salesPeople={salesPeople}
+            onBulkAssignComplete={fetchLeads}
           />
         )}
       </div>
@@ -775,6 +870,8 @@ export default function CrmPage() {
         onOpenChange={setDetailOpen}
         onLeadUpdate={handleLeadUpdate}
         onLeadDelete={handleLeadDelete}
+        profile={profile}
+        salesPeople={salesPeople}
       />
 
       <AddLeadModal

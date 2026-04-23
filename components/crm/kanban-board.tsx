@@ -13,7 +13,7 @@ import {
 } from "@dnd-kit/core";
 import { KanbanColumn } from "./kanban-column";
 import { LeadCard } from "./lead-card";
-import type { Lead, LeadStatus } from "@/types";
+import type { Lead, LeadStatus, Profile } from "@/types";
 
 // ─── Pipeline column order ───────────────────────────
 const PIPELINE_COLUMNS: LeadStatus[] = [
@@ -32,9 +32,10 @@ interface KanbanBoardProps {
   leads: Lead[];
   onLeadMove: (leadId: string, newStatus: LeadStatus) => void;
   onLeadClick: (lead: Lead) => void;
+  salesPeople?: Profile[];
 }
 
-export function KanbanBoard({ leads, onLeadMove, onLeadClick }: KanbanBoardProps) {
+export function KanbanBoard({ leads, onLeadMove, onLeadClick, salesPeople }: KanbanBoardProps) {
   const [activeId, setActiveId] = useState<string | null>(null);
 
   // Pointer sensor with distance constraint so clicks don't trigger drags
@@ -116,6 +117,7 @@ export function KanbanBoard({ leads, onLeadMove, onLeadClick }: KanbanBoardProps
             status={status}
             leads={leadsByStatus[status]}
             onLeadClick={onLeadClick}
+            salesPeople={salesPeople}
           />
         ))}
       </div>
@@ -127,7 +129,7 @@ export function KanbanBoard({ leads, onLeadMove, onLeadClick }: KanbanBoardProps
             className="w-[280px] rotate-[2deg] scale-105"
             style={{ pointerEvents: "none" }}
           >
-            <LeadCard lead={activeLead} isDragging />
+            <LeadCard lead={activeLead} isDragging salesPeople={salesPeople} />
           </div>
         ) : null}
       </DragOverlay>

@@ -26,6 +26,7 @@ import {
   Loader2,
   Copy,
   Check,
+  UserCircle,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -42,6 +43,7 @@ import type {
   SubscriptionTier,
   OutreachLog,
   OutreachType,
+  Profile,
 } from "@/types";
 
 // ============================================================
@@ -204,6 +206,8 @@ interface LeadDetailModalProps {
   onOpenChange: (open: boolean) => void;
   onLeadUpdate: (updatedLead: Lead) => void;
   onLeadDelete: (leadId: string) => void;
+  profile?: Profile | null;
+  salesPeople?: Profile[];
 }
 
 // ============================================================
@@ -811,6 +815,151 @@ function InlineBusinessName({ value, savingField, onSave }: InlineBusinessNamePr
 }
 
 // ============================================================
+// Assignee control
+// ============================================================
+
+function getInitialsLM(name: string | null | undefined): string {
+  if (!name) return "?";
+  const parts = name.trim().split(/\s+/);
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+interface AssigneeControlProps {
+  lead: Lead;
+  profile: Profile | null;
+  salesPeople: Profile[];
+  savingField: SavingField;
+  onSave: (fieldName: string, value: string | null) => void;
+}
+
+function AssigneeControl({
+  lead,
+  profile,
+  salesPeople,
+  savingField,
+  onSave,
+}: AssigneeControlProps) {
+  const [editing, setEditing] = useState(false);
+  const selectRef = useRef<HTMLSelectElement>(null);
+  const isAdmin = profile?.role === "admin";
+
+  // Admins + sales people (both assignable)
+  const assignable = salesPeople.filter(
+    (p) => p.role === "sales" || p.role === "admin",
+  );
+
+  const assignee =
+    lead.assigned_to
+      ? assignable.find((p) => p.id === lead.assigned_to) ?? null
+      : null;
+
+  useEffect(() => {
+    if (editing) selectRef.current?.focus();
+  }, [editing]);
+
+  function commit(e: ChangeEvent<HTMLSelectElement>) {
+    const raw = e.target.value;
+    const newVal: string | null = raw === "" ? null : raw;
+    setEditing(false);
+    if (newVal !== (lead.assigned_to ?? null)) {
+      onSave("assigned_to", newVal);
+    }
+  }
+
+  function handleKeyDown(e: KeyboardEvent<HTMLSelectElement>) {
+    if (e.key === "Escape") setEditing(false);
+  }
+
+  const displayName = assignee?.full_name ?? assignee?.email ?? null;
+  const saving = savingField === "assigned_to";
+
+  // Read-only chip for non-admins
+  if (!isAdmin) {
+    return (
+      <span
+        className={`inline-flex items-center gap-1.5 rounded-full bg-[#27272A] px-2 py-0.5 text-xs font-medium ${
+          assignee ? "text-[#FAFAFA]" : "text-[#71717A]"
+        }`}
+        title={assignee ? `Assigned to ${displayName}` : "Unassigned"}
+      >
+        <span
+          className="h-1.5 w-1.5 rounded-full shrink-0"
+          style={{ backgroundColor: assignee ? "#0EA5E9" : "#71717A" }}
+        />
+        {assignee ? (
+          <>
+            <span className="flex items-center justify-center h-4 w-4 rounded-full bg-[#0EA5E9]/20 text-[9px] font-semibold text-[#0EA5E9]">
+              {getInitialsLM(displayName)}
+            </span>
+            <span className="max-w-[140px] truncate">{displayName}</span>
+          </>
+        ) : (
+          <>
+            <UserCircle className="h-3 w-3" />
+            <span>Unassigned</span>
+          </>
+        )}
+      </span>
+    );
+  }
+
+  if (editing) {
+    return (
+      <select
+        ref={selectRef}
+        value={lead.assigned_to ?? ""}
+        onChange={commit}
+        onBlur={() => setEditing(false)}
+        onKeyDown={handleKeyDown}
+        className="bg-[#09090B] text-xs text-[#FAFAFA] border border-[#27272A] rounded-md px-2 py-1 outline-none focus:ring-1 focus:ring-[#0EA5E9]"
+      >
+        <option value="">Unassigned</option>
+        {assignable.map((p) => {
+          const label = p.full_name ?? p.email ?? "User";
+          return (
+            <option key={p.id} value={p.id}>
+              {label}
+              {p.role === "admin" ? " (admin)" : ""}
+            </option>
+          );
+        })}
+      </select>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => setEditing(true)}
+      className={`inline-flex items-center gap-1.5 rounded-full bg-[#27272A] px-2 py-0.5 text-xs font-medium transition-colors hover:bg-[#3F3F46] ${
+        assignee ? "text-[#FAFAFA]" : "text-[#71717A]"
+      }`}
+      title={isAdmin ? "Click to change assignee" : undefined}
+    >
+      <span
+        className="h-1.5 w-1.5 rounded-full shrink-0"
+        style={{ backgroundColor: assignee ? "#0EA5E9" : "#71717A" }}
+      />
+      {assignee ? (
+        <>
+          <span className="flex items-center justify-center h-4 w-4 rounded-full bg-[#0EA5E9]/20 text-[9px] font-semibold text-[#0EA5E9]">
+            {getInitialsLM(displayName)}
+          </span>
+          <span className="max-w-[140px] truncate">{displayName}</span>
+        </>
+      ) : (
+        <>
+          <UserCircle className="h-3 w-3" />
+          <span>Unassigned</span>
+        </>
+      )}
+      {saving && <Loader2 className="h-3 w-3 text-[#0EA5E9] animate-spin" />}
+    </button>
+  );
+}
+
+// ============================================================
 // Outer shell
 // ============================================================
 
@@ -820,6 +969,8 @@ export function LeadDetailModal({
   onOpenChange,
   onLeadUpdate,
   onLeadDelete,
+  profile,
+  salesPeople,
 }: LeadDetailModalProps) {
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -862,6 +1013,8 @@ export function LeadDetailModal({
                     onOpenChange={onOpenChange}
                     onLeadUpdate={onLeadUpdate}
                     onLeadDelete={onLeadDelete}
+                    profile={profile}
+                    salesPeople={salesPeople}
                   />
                 </motion.div>
               </motion.div>
@@ -882,6 +1035,8 @@ interface LeadDetailModalBodyProps {
   onOpenChange: (open: boolean) => void;
   onLeadUpdate: (updatedLead: Lead) => void;
   onLeadDelete: (leadId: string) => void;
+  profile?: Profile | null;
+  salesPeople?: Profile[];
 }
 
 function LeadDetailModalBody({
@@ -889,6 +1044,8 @@ function LeadDetailModalBody({
   onOpenChange,
   onLeadUpdate,
   onLeadDelete,
+  profile,
+  salesPeople,
 }: LeadDetailModalBodyProps) {
   const [activeTab, setActiveTab] = useState<"details" | "outreach" | "enrichment" | "score">("details");
   const [savingField, setSavingField] = useState<SavingField>(null);
@@ -1062,6 +1219,13 @@ function LeadDetailModalBody({
                 fieldName="niche"
                 value={lead.niche}
                 options={NICHE_OPTIONS}
+                savingField={savingField}
+                onSave={saveField}
+              />
+              <AssigneeControl
+                lead={lead}
+                profile={profile ?? null}
+                salesPeople={salesPeople ?? []}
                 savingField={savingField}
                 onSave={saveField}
               />

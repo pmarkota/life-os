@@ -41,6 +41,7 @@ export type SubscriptionTier = "basic_79" | "standard_99" | "custom";
 export interface Lead {
   id: string;
   user_id: string;
+  assigned_to: string | null;
   business_name: string;
   contact_name: string | null;
   email: string | null;
@@ -68,6 +69,66 @@ export interface Lead {
   created_at: string;
   updated_at: string;
 }
+
+// --- Profiles / Sales People ---
+export type UserRole = "admin" | "sales";
+
+export interface ProfilePermissions {
+  can_use_leadgen: boolean;
+  can_generate_messages: boolean;
+  can_edit_lead: boolean;
+  can_delete_lead: boolean;
+}
+
+export interface Profile {
+  id: string;
+  email: string;
+  full_name: string | null;
+  role: UserRole;
+  permissions: ProfilePermissions;
+  created_at: string;
+  updated_at: string;
+}
+
+// Preset templates shown in the Sales People UI
+export type PermissionPreset = "viewer" | "standard" | "senior";
+
+export const PERMISSION_PRESETS: Record<PermissionPreset, {
+  label: string;
+  description: string;
+  permissions: ProfilePermissions;
+}> = {
+  viewer: {
+    label: "Viewer",
+    description: "Can only see their assigned leads. Cannot use Lead Generator or generate AI messages.",
+    permissions: {
+      can_use_leadgen: false,
+      can_generate_messages: false,
+      can_edit_lead: true,
+      can_delete_lead: false,
+    },
+  },
+  standard: {
+    label: "Standard",
+    description: "Can edit assigned leads and generate AI messages. No Lead Generator access.",
+    permissions: {
+      can_use_leadgen: false,
+      can_generate_messages: true,
+      can_edit_lead: true,
+      can_delete_lead: false,
+    },
+  },
+  senior: {
+    label: "Senior",
+    description: "Full access: Lead Generator, AI messages, edit, and delete assigned leads.",
+    permissions: {
+      can_use_leadgen: true,
+      can_generate_messages: true,
+      can_edit_lead: true,
+      can_delete_lead: true,
+    },
+  },
+};
 
 // --- Email Templates ---
 export interface EmailTemplate {
