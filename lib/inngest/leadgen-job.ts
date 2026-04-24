@@ -362,6 +362,34 @@ export const leadgenJob = inngest.createFunction(
         // GOOD sites stay visible but auto-deselected — user can still save them manually
         const isGoodSite = webData.web_status === "GOOD" && !config.skip_web_check;
 
+        // No way to reach this lead — skip entirely. Email + phone are the only
+        // actionable channels; without either the lead is unworkable.
+        const isUnreachable = !webData.email && !place.phone;
+
+        // Short-circuit unreachable leads — don't waste an LLM call on them.
+        if (isUnreachable) {
+          return {
+            ...place,
+            email: webData.email,
+            instagram: webData.instagram,
+            facebook: webData.facebook,
+            web_status: webData.web_status,
+            quality_score: webData.quality_score,
+            page_speed: webData.page_speed,
+            has_ssl: webData.has_ssl,
+            is_mobile_responsive: webData.is_mobile_responsive,
+            tech_stack: webData.tech_stack,
+            channel,
+            message: "",
+            market: config.market,
+            niche: config.niche,
+            owner_name: contactName,
+            contact_name: contactName,
+            selected: false,
+            removed: true,
+          } as ProcessedLead;
+        }
+
         // Generate message
         let message = "";
         try {
